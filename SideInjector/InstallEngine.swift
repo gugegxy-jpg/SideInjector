@@ -94,7 +94,7 @@ final class InstallEngine {
         let conn: NWConnection
         do {
             conn = try await withTimeout(seconds: 3) {
-                try await connectTLS(host: lockdownHost, port: lockdownPort)
+                try await connectTLS(host: self.lockdownHost, port: self.lockdownPort)
             }
         } catch {
             return TunnelStatus(ok: false,

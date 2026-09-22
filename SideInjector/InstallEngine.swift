@@ -135,7 +135,7 @@ private func receiveChunk(on conn: NWConnection) async throws -> Data {
 }
 
 /// 从累计缓冲里解析出第一个完整 XML plist（兼容一条流里紧跟多条消息）。
-private func parseFirstPlist(_ data: Data) -> ([String: Any]?, Int)? {
+private func parseFirstPlist(_ data: Data) -> ([String: Any], Int)? {
     guard let end = data.range(of: Data("</plist>".utf8)) else { return nil }
     let slice = data[...end.upperBound]
     guard let dict = try? PropertyListSerialization.propertyList(from: Data(slice), format: nil) as? [String: Any] else {

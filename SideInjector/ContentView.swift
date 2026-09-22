@@ -6,30 +6,32 @@ struct ContentView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(spacing: 18) {
-                    header.cascadeItem(0)
-                    certCard.cascadeItem(1)
-                    inputCard.cascadeItem(2)
-                    tunnelCard.cascadeItem(3)
-                    if model.busy || model.stageIndex >= 0 {
-                        progressCard.transition(.cardAppear)
+            ZStack {
+                AppBackground()
+                    .ignoresSafeArea()
+                ScrollView {
+                    VStack(spacing: 18) {
+                        header.cascadeItem(0)
+                        certCard.cascadeItem(1)
+                        inputCard.cascadeItem(2)
+                        tunnelCard.cascadeItem(3)
+                        if model.busy || model.stageIndex >= 0 {
+                            progressCard.transition(.cardAppear)
+                        }
+                        actionButton.cascadeItem(4)
+                        logCard.cascadeItem(5)
                     }
-                    actionButton.cascadeItem(4)
-                    logCard.cascadeItem(5)
+                    .padding(20)
+                    .animation(.smooth(duration: 0.35), value: model.busy)
+                    .animation(.smooth(duration: 0.35), value: model.stageIndex)
+                    .animation(.smooth(duration: 0.35), value: model.tunnelStatus?.ok)
                 }
-                .padding(20)
-                .animation(.smooth(duration: 0.35), value: model.busy)
-                .animation(.smooth(duration: 0.35), value: model.stageIndex)
-                .animation(.smooth(duration: 0.35), value: model.tunnelStatus?.ok)
+                .scrollDismissesKeyboard(.interactively)
             }
-            .background(AppBackground())
-            .navigationTitle("SideInjector")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarHidden(true)
             .preferredColorScheme(.dark)
             .tint(Theme.accent)
             .onAppear { model.checkEnvironment() }
-            .scrollDismissesKeyboard(.interactively)
         }
     }
 

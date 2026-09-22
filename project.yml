@@ -13,7 +13,6 @@ targets:
       - path: SideInjector
     info:
       path: SideInjector/Info.plist
-    entitlements: SideInjector/SideInjector.entitlements
     dependencies:
       - framework: core/build/sideinjector_core.xcframework
     settings:

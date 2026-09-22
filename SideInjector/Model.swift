@@ -25,6 +25,18 @@ final class Model: ObservableObject {
     let stages = ["解压 IPA", "注入 dylib", "重签", "打包 IPA", "安装到设备"]
     @Published var stageIndex: Int = -1   // -1 表示空闲
 
+    // 安装环境检测（本地回环隧道是否「绿」）
+    @Published var tunnelStatus: TunnelStatus? = nil
+
+    func checkEnvironment() {
+        tunnelStatus = nil
+        Task.detached { [weak self] in
+            guard let self else { return }
+            let s = await InstallEngine.shared.diagnose()
+            DispatchQueue.main.async { self.tunnelStatus = s }
+        }
+    }
+
     func run() {
         guard let ipa else {
             status = "请先选择 IPA 文件"

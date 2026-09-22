@@ -8,6 +8,28 @@ struct InstallResult {
     let message: String
 }
 
+/// 本地回环隧道健康状态（绿/红）
+struct TunnelStatus {
+    let ok: Bool              // true = 绿（隧道可达且 lockdownd 握手成功）
+    let message: String
+    let deviceClass: String?  // lockdownd 返回的 Type，如 com.apple.mobile.lockdown
+    let selfPair: Bool?       // 是否支持设备端自配对（nil = 未探测）
+}
+
+/// 给异步操作加超时，避免探测时卡死在连接等待上。
+func withTimeout<T>(seconds: Double, _ body: @escaping () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await body() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            throw NSError(domain: "timeout", code: 1, userInfo: [NSLocalizedDescriptionKey: "连接超时"])
+        }
+        defer { group.cancelAll() }
+        guard let result = try await group.next() else { throw NSError(domain: "timeout", code: 2) }
+        return result
+    }
+}
+
 /// 设备端安装引擎 —— 参考 FrizzleM/SideInstaller 的「本地回环隧道」思路。
 ///
 /// 机制：通过 LocalDevVPN（本地 VPN/DNS 描述文件）让设备自身向本机
@@ -61,6 +83,41 @@ final class InstallEngine {
             return .init(ok: true, message: "安装请求已发送，设备正在安装")
         } catch {
             return .init(ok: false, message: "回环隧道安装失败：\(error.localizedDescription)")
+        }
+    }
+
+    // MARK: - 环境检测
+
+    /// 检测本地回环隧道是否可用（绿/红）。
+    /// 探测：连接 lockdownd → QueryType 握手 → 试探 StartSession(nil) 判断是否支持设备端自配对。
+    func diagnose() async -> TunnelStatus {
+        do {
+            let conn = try await withTimeout(seconds: 3) {
+                try await connectTLS(host: lockdownHost, port: lockdownPort)
+            }
+            defer { conn.cancel() }
+            let ld = LockdownClient(connection: conn)
+            guard let resp = try? await withTimeout(seconds: 3) { try await ld.queryType() } else {
+                return TunnelStatus(ok: true,
+                                    message: "隧道可连接，但 lockdownd 握手未完成",
+                                    deviceClass: nil, selfPair: nil)
+            }
+            let deviceClass = resp["Type"] as? String
+            var selfPair: Bool? = nil
+            do {
+                try await withTimeout(seconds: 3) { try await ld.startSession(pairing: nil) }
+                selfPair = true
+            } catch {
+                selfPair = false
+            }
+            let extra = selfPair == true ? "（支持设备端自配对，iOS 27+）"
+                        : (selfPair == false ? "（需 PC 配对文件，iOS 18–26）" : "")
+            return TunnelStatus(ok: true, message: "本地回环隧道已连通\(extra)",
+                                deviceClass: deviceClass, selfPair: selfPair)
+        } catch {
+            return TunnelStatus(ok: false,
+                                message: "本地回环隧道未建立：\(error.localizedDescription)",
+                                deviceClass: nil, selfPair: nil)
         }
     }
 

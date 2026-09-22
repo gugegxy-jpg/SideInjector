@@ -11,6 +11,8 @@ struct ContentView: View {
                 VStack(spacing: 18) {
                     header
 
+                    envCard
+
                     sectionCard(title: "开发证书") {
                         FileRow(title: "P12 证书", url: $model.certP12)
                         Divider()
@@ -52,6 +54,7 @@ struct ContentView: View {
                 .padding(.vertical, 12)
             }
             .siBackdrop()
+            .onAppear { model.checkEnvironment() }
             .navigationTitle("SideInjector")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -124,6 +127,43 @@ struct ContentView: View {
     }
 
     // MARK: - 状态 / 进度
+
+    /// 安装环境检测卡片：本地回环隧道是否「绿」。
+    private var envCard: some View {
+        sectionCard(title: "安装环境") {
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(model.tunnelStatus?.ok == true ? Color.green
+                          : (model.tunnelStatus?.ok == false ? Color.red : Color.gray))
+                    .frame(width: 12, height: 12)
+                    .shadow(color: (model.tunnelStatus?.ok == true ? Color.green
+                                    : (model.tunnelStatus?.ok == false ? Color.red : Color.clear))
+                                    .opacity(0.6), radius: 4)
+                if let s = model.tunnelStatus {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(s.message)
+                            .font(.subheadline)
+                            .foregroundStyle(.primary)
+                        if let dc = s.deviceClass {
+                            Text("lockdownd: \(dc)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    ProgressView().tint(.secondary)
+                    Text("检测中…").foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    model.checkEnvironment()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
 
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: 12) {

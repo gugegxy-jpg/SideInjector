@@ -96,6 +96,10 @@ jobs:
       - name: Export IPA (signed)
         if: steps.sign.outputs.enabled == 'true'
         run: |
+          # 在导出（重签）前把 rcodesign 放进 .app，让 exportArchive 把它一起签进包；
+          # 若放在导出后再拷，会破坏 App 签名导致安装失败。
+          cp SideInjector/rcodesign build/SideInjector.xcarchive/Products/Applications/SideInjector.app/rcodesign
+          chmod +x build/SideInjector.xcarchive/Products/Applications/SideInjector.app/rcodesign
           xcodebuild -exportArchive \
             -archivePath build/SideInjector.xcarchive \
             -exportOptionsPlist ExportOptions.plist \
@@ -106,6 +110,9 @@ jobs:
         run: |
           mkdir -p build/ipa/Payload
           cp -R build/SideInjector.xcarchive/Products/Applications/SideInjector.app build/ipa/Payload/
+          # archive 校验可能剥离包内未签名的嵌套二进制，archive 之后再拷一次保证 rcodesign 进包
+          cp SideInjector/rcodesign build/ipa/Payload/SideInjector.app/rcodesign
+          chmod +x build/ipa/Payload/SideInjector.app/rcodesign
           cd build/ipa && zip -r ../SideInjector.ipa Payload
 
       - name: Upload IPA

@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var model: Model
     @EnvironmentObject var log: LogStore
+    @Environment(\.horizontalSizeClass) private var hSize
     @State private var presentingShare = false
 
     var body: some View {
@@ -10,7 +11,9 @@ struct ContentView: View {
             ZStack {
                 AppBackground()
                     .ignoresSafeArea()
-                ScrollView {
+                // contentAlignment: .top 让窄于视口的列在 iPad 上水平居中，
+                // 避免默认 .topLeading 把内容顶到左边、右侧留白（参照 SideInstaller）。
+                ScrollView(contentAlignment: .top) {
                     VStack(spacing: 18) {
                         header.cascadeItem(0)
                         certCard.cascadeItem(1)
@@ -32,7 +35,9 @@ struct ContentView: View {
                         logCard.cascadeItem(5)
                     }
                     .padding(20)
-                    .frame(maxWidth: 760)
+                    // iPhone 全宽；iPad 限宽成居中列（参照 SideInstaller 的全宽自适应，
+                    // 这里给 iPad 一个可读的最大列宽，避免超宽拉伸）。
+                    .frame(maxWidth: hSize == .regular ? 900 : .infinity)
                     .animation(.smooth(duration: 0.35), value: model.busy)
                     .animation(.smooth(duration: 0.35), value: model.stageIndex)
                     .animation(.smooth(duration: 0.35), value: model.tunnelStatus?.ok)

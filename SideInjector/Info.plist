@@ -31,5 +31,7 @@
     <array>
         <string>network</string>
     </array>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>SideInjector 需要通过本机回环（LocalDevVPN）连接设备自身的 CoreDevice/lockdownd 服务以完成安装。</string>
 </dict>
 </plist>

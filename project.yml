@@ -1,0 +1,26 @@
+# XcodeGen 规格：在 macOS 上 `xcodegen generate` 生成 SideInjector.xcodeproj
+name: SideInjector
+options:
+  bundleIdPrefix: com.example.sideinjector
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  SideInjector:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: SideInjector
+    info:
+      path: SideInjector/Info.plist
+    entitlements: SideInjector/SideInjector.entitlements
+    dependencies:
+      - framework: core/build/sideinjector_core.xcframework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.sideinjector
+        INFOPLIST_FILE: SideInjector/Info.plist
+        CODE_SIGN_ENTITLEMENTS: SideInjector/SideInjector.entitlements
+        OTHER_LDFLAGS: ["-ObjC"]
+        # 预编译的 rcodesign(iOS) 通过 .gitignore 外的本地文件 SideInjector/rcodesign 打包；
+        # 运行时设置环境变量 RCODESIGN_PATH 指向它（缺失则运行时签名会提示）。

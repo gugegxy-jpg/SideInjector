@@ -1,0 +1,18 @@
+# 构建产物
+core/target/
+core/build/
+build/
+*.xcarchive
+*.ipa
+
+# Xcode
+DerivedData/
+*.xcuserdata/
+SideInjector.xcodeproj/
+
+# 第三方二进制（需自行放入，不入仓）
+SideInjector/rcodesign
+
+# Python
+__pycache__/
+*.pyc

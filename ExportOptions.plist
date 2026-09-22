@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <!-- 需替换为你的真实值；CI 中建议通过 Secrets 注入证书/描述文件后填写 -->
+    <key>method</key>
+    <string>development</string>
+    <key>signingStyle</key>
+    <string>manual</string>
+    <key>teamID</key>
+    <string>YOUR_TEAM_ID</string>
+    <key>signingCertificate</key>
+    <string>Apple Development</string>
+    <key>provisioningProfiles</key>
+    <dict>
+        <key>com.example.sideinjector</key>
+        <string>SideInjector Development</string>
+    </dict>
+    <key>compileBitcode</key>
+    <false/>
+</dict>
+</plist>

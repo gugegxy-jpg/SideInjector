@@ -1,0 +1,15 @@
+[package]
+name = "sideinjector-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sideinjector_core"
+crate-type = ["staticlib"]
+
+[dependencies]
+anyhow = "1"
+zip = "2"
+# 注意：签名首选「打包进 App 的 rcodesign 二进制」（见 sign.rs）。
+# 若要走纯 Rust 库签名，可启用下方依赖并按 sign.rs 注释对接 apple-codesign API。
+# apple-codesign = "0.27"

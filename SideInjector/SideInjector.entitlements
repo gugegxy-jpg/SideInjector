@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <!-- 需侧载并放宽沙盒以便访问本机 CoreDevice/lockdownd 回环 -->
+    <key>com.apple.security.get-task-allow</key>
+    <true/>
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
+    <!-- 注意：真正访问设备服务的私有 entitlement 需随 CoreDevice 接入一并补齐 -->
+</dict>
+</plist>

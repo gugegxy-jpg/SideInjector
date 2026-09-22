@@ -26,8 +26,8 @@ final class Model: ObservableObject {
     @Published var stageIndex: Int = -1   // -1 表示空闲
 
     func run() {
-        guard let ipa, let dylib else {
-            status = "请先选择 IPA 和要注入的 dylib"
+        guard let ipa else {
+            status = "请先选择 IPA 文件"
             return
         }
         busy = true
@@ -42,24 +42,41 @@ final class Model: ObservableObject {
 
         let fm = FileManager.default
         let tmp = fm.temporaryDirectory.appendingPathComponent("si_\(UUID().uuidString)")
-        let payload = tmp.appendingPathComponent("Payload")
-        let outIpa = tmp.appendingPathComponent("signed.ipa")
+        // signed.ipa 放在 tmp 之外，避免被一起打包回 IPA
+        let outIpa = fm.temporaryDirectory.appendingPathComponent("signed_\(UUID().uuidString).ipa")
 
         Task.detached { [weak self] in
             guard let self else { return }
             let r = RustBridge.shared
 
+            // 解压到 tmp（保留 zip 内的 Payload/ 前缀，避免变成 Payload/Payload/App.app）
             self.setStage(0, "解压 IPA…")
-            var code = r.unzip(ipa: ipa.path, out: payload.path)
+            var code = r.unzip(ipa: ipa.path, out: tmp.path)
             if code != 0 { self.finish("解压 IPA 失败"); self.stopAccess(&accessed); return }
+
+            // 规范化：确保存在 tmp/Payload（个别 IPA 没有 Payload 目录则把 .app 移进去）
+            var payload = tmp.appendingPathComponent("Payload")
+            if !fm.fileExists(atPath: payload.path) {
+                if let app = try? fm.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil)
+                    .first(where: { $0.pathExtension == "app" }) {
+                    try? fm.createDirectory(at: payload, withIntermediateDirectories: true)
+                    try? fm.moveItem(at: app, to: payload.appendingPathComponent(app.lastPathComponent))
+                }
+            }
 
             guard let app = try? fm.contentsOfDirectory(at: payload, includingPropertiesForKeys: nil)
                 .first(where: { $0.pathExtension == "app" })
             else { self.finish("未在 Payload 中找到 .app"); self.stopAccess(&accessed); return }
 
-            self.setStage(1, "注入 dylib…")
-            code = r.inject(app: app.path, dylib: dylib.path, name: self.dylibName)
-            if code != 0 { self.finish("注入 dylib 失败"); self.stopAccess(&accessed); return }
+            // 注入 dylib 为可选项：未选择则跳过，直接进入签名 + 安装
+            if let dylib = self.dylib {
+                self.setStage(1, "注入 dylib…")
+                code = r.inject(app: app.path, dylib: dylib.path, name: self.dylibName)
+                if code != 0 { self.finish("注入 dylib 失败"); self.stopAccess(&accessed); return }
+            } else {
+                self.setStage(1, "未选择 dylib，跳过注入")
+                LogStore.shared.append("run: 未选择 dylib，直接进入签名")
+            }
 
             self.setStage(2, "重签…")
             code = r.sign(app: app.path, p12: self.certP12?.path, pw: self.certPass,
@@ -67,7 +84,8 @@ final class Model: ObservableObject {
             if code != 0 { self.finish("重签失败（检查证书/描述文件/Team ID）"); self.stopAccess(&accessed); return }
 
             self.setStage(3, "打包 IPA…")
-            code = r.zip(dir: payload.path, out: outIpa.path)
+            // 打包整个 tmp（自动带 Payload/ 前缀，生成合法 IPA）
+            code = r.zip(dir: tmp.path, out: outIpa.path)
             if code != 0 { self.finish("重新打包失败"); self.stopAccess(&accessed); return }
 
             // 安装：走本地回环隧道（参考 SideInstaller 的 LocalDevVPN 机制）

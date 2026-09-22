@@ -47,6 +47,7 @@ struct ContentView: View {
                         .animation(.easeInOut, value: showLogs)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .top)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             }
@@ -94,6 +95,7 @@ struct ContentView: View {
         }
         .padding(16)
         .siGlass()
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - 主操作按钮
@@ -117,6 +119,7 @@ struct ContentView: View {
             .foregroundStyle(.white)
         }
         .siGlassButton(tint: model.busy ? .gray : .blue)
+        .frame(maxWidth: .infinity)
         .disabled(model.busy)
     }
 
@@ -148,6 +151,7 @@ struct ContentView: View {
         }
         .padding(16)
         .siGlass()
+        .frame(maxWidth: .infinity)
     }
 }
 

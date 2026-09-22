@@ -17,6 +17,10 @@ final class DocumentPicker: UIDocumentPickerViewController, UIDocumentPickerDele
         self.allowsMultipleSelection = false
     }
 
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     func documentPicker(_ controller: UIDocumentPickerViewController,
                         didPickDocumentsAt urls: [URL]) {
         if let u = urls.first {

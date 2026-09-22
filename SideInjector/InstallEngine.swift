@@ -91,34 +91,38 @@ final class InstallEngine {
     /// 检测本地回环隧道是否可用（绿/红）。
     /// 探测：连接 lockdownd → QueryType 握手 → 试探 StartSession(nil) 判断是否支持设备端自配对。
     func diagnose() async -> TunnelStatus {
+        let conn: NWConnection
         do {
-            let conn = try await withTimeout(seconds: 3) {
+            conn = try await withTimeout(seconds: 3) {
                 try await connectTLS(host: lockdownHost, port: lockdownPort)
             }
-            defer { conn.cancel() }
-            let ld = LockdownClient(connection: conn)
-            guard let resp = try? await withTimeout(seconds: 3) { try await ld.queryType() } else {
-                return TunnelStatus(ok: true,
-                                    message: "隧道可连接，但 lockdownd 握手未完成",
-                                    deviceClass: nil, selfPair: nil)
-            }
-            let deviceClass = resp["Type"] as? String
-            var selfPair: Bool? = nil
-            do {
-                try await withTimeout(seconds: 3) { try await ld.startSession(pairing: nil) }
-                selfPair = true
-            } catch {
-                selfPair = false
-            }
-            let extra = selfPair == true ? "（支持设备端自配对，iOS 27+）"
-                        : (selfPair == false ? "（需 PC 配对文件，iOS 18–26）" : "")
-            return TunnelStatus(ok: true, message: "本地回环隧道已连通\(extra)",
-                                deviceClass: deviceClass, selfPair: selfPair)
         } catch {
             return TunnelStatus(ok: false,
                                 message: "本地回环隧道未建立：\(error.localizedDescription)",
                                 deviceClass: nil, selfPair: nil)
         }
+        defer { conn.cancel() }
+        let ld = LockdownClient(connection: conn)
+        let resp: [String: Any]
+        do {
+            resp = try await withTimeout(seconds: 3) { try await ld.queryType() }
+        } catch {
+            return TunnelStatus(ok: true,
+                                message: "隧道可连接，但 lockdownd 握手未完成",
+                                deviceClass: nil, selfPair: nil)
+        }
+        let deviceClass = resp["Type"] as? String
+        var selfPair: Bool? = nil
+        do {
+            try await withTimeout(seconds: 3) { try await ld.startSession(pairing: nil) }
+            selfPair = true
+        } catch {
+            selfPair = false
+        }
+        let extra = selfPair == true ? "（支持设备端自配对，iOS 27+）"
+                    : (selfPair == false ? "（需 PC 配对文件，iOS 18–26）" : "")
+        return TunnelStatus(ok: true, message: "本地回环隧道已连通\(extra)",
+                            deviceClass: deviceClass, selfPair: selfPair)
     }
 
     // MARK: - 配对文件

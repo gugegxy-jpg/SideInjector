@@ -29,12 +29,16 @@ jobs:
       - name: Build Rust xcframework
         run: cd core && bash ./build_xcframework.sh
 
-      - name: Provide rcodesign (iOS, optional)
+      - name: Build rcodesign (iOS) and bundle it
         run: |
+          export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
+          export IPHONEOS_DEPLOYMENT_TARGET=17.0
+          cargo install apple-codesign@0.27.0 --target aarch64-apple-ios --root /tmp/rcodesign-ios --locked
           mkdir -p SideInjector
-          # 把编译好的 iOS 版 rcodesign 放到 SideInjector/rcodesign 即可启用运行时签名；
-          # 不提供不影响「解包/注入/打包」，仅影响 App 内的重签按钮。
-          test -x SideInjector/rcodesign || echo "::warning::未找到 rcodesign，运行时签名将不可用"
+          cp /tmp/rcodesign-ios/bin/rcodesign SideInjector/rcodesign
+          chmod +x SideInjector/rcodesign
+          ls -lh SideInjector/rcodesign
+          /tmp/rcodesign-ios/bin/rcodesign sign --help | head -n 20 || true
 
       - name: Generate Xcode project
         run: xcodegen generate

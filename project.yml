@@ -11,6 +11,8 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: SideInjector
+        excludes:
+          - rcodesign
     info:
       path: SideInjector/Info.plist
     dependencies:
@@ -21,5 +23,16 @@ targets:
         INFOPLIST_FILE: SideInjector/Info.plist
         CODE_SIGN_ENTITLEMENTS: SideInjector/SideInjector.entitlements
         OTHER_LDFLAGS: ["-ObjC"]
-        # 预编译的 rcodesign(iOS) 通过 .gitignore 外的本地文件 SideInjector/rcodesign 打包；
-        # 运行时设置环境变量 RCODESIGN_PATH 指向它（缺失则运行时签名会提示）。
+        # 内置 rcodesign(iOS) 由 CI 编译到 SideInjector/rcodesign，
+        # 由下方 scriptPhases 拷进 App 并加可执行权限；运行时设 RCODESIGN_PATH 指向它。
+    scriptPhases:
+      - name: Bundle rcodesign (iOS)
+        shellPath: /bin/sh
+        script: |
+          if [ -f "${SRCROOT}/SideInjector/rcodesign" ]; then
+            cp "${SRCROOT}/SideInjector/rcodesign" "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/rcodesign"
+            chmod +x "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/rcodesign"
+            echo "bundled rcodesign"
+          else
+            echo "warning: SideInjector/rcodesign not found; in-app signing disabled"
+          fi

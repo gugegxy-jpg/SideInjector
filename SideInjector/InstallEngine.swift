@@ -156,42 +156,54 @@ private func connectTLS(host: String, port: UInt16, ssl: Bool = true) async thro
         params = NWParameters.tcp
     }
     let conn = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)
-    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-        var done = false
-        conn.stateUpdateHandler = { state in
-            guard !done else { return }
-            switch state {
-            case .ready:
-                done = true; cont.resume()
-            case .failed(let err):
-                done = true; cont.resume(throwing: err)
-            case .cancelled:
-                done = true; cont.resume(throwing: CancellationError())
-            default:
-                break
+    try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            var done = false
+            conn.stateUpdateHandler = { state in
+                guard !done else { return }
+                switch state {
+                case .ready:
+                    done = true; cont.resume()
+                case .failed(let err):
+                    done = true; cont.resume(throwing: err)
+                case .cancelled:
+                    done = true; cont.resume(throwing: CancellationError())
+                default:
+                    break
+                }
             }
+            conn.start(queue: .global())
         }
-        conn.start(queue: .global())
+    } onCancel: {
+        conn.cancel()
     }
     return conn
 }
 
 private func sendPlist(_ dict: [String: Any], on conn: NWConnection) async throws {
     let data = try PropertyListSerialization.data(fromPropertyList: dict, format: .xml, options: 0)
-    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-        conn.send(content: data, completion: .contentProcessed { err in
-            if let err { cont.resume(throwing: err) } else { cont.resume() }
-        })
+    try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            conn.send(content: data, completion: .contentProcessed { err in
+                if let err { cont.resume(throwing: err) } else { cont.resume() }
+            })
+        }
+    } onCancel: {
+        conn.cancel()
     }
 }
 
 private func receiveChunk(on conn: NWConnection) async throws -> Data {
-    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, err in
-            if let err { cont.resume(throwing: err) }
-            else if let data { cont.resume(returning: data) }
-            else { cont.resume(throwing: NSError(domain: "eof", code: 1)) }
+    try await withTaskCancellationHandler {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, _, err in
+                if let err { cont.resume(throwing: err) }
+                else if let data { cont.resume(returning: data) }
+                else { cont.resume(throwing: NSError(domain: "eof", code: 1)) }
+            }
         }
+    } onCancel: {
+        conn.cancel()
     }
 }
 

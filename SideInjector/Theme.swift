@@ -25,42 +25,31 @@ enum Theme {
 
 // MARK: - 背景
 
-/// 应用背景：OLED 黑底之上缓慢流动的蓝色网格渐变。
+/// 应用背景：OLED 黑底之上两团缓慢游走的蓝色光晕。
 struct AppBackground: View {
     var body: some View {
         TimelineView(.animation) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             ZStack {
                 Color.black
-                MeshGradient(width: 3, height: 3, points: meshPoints(at: t), colors: meshColors)
-                    .blur(radius: 24)
-                    .opacity(0.22)
+                RadialGradient(colors: [Theme.accent.opacity(0.55), .clear],
+                               center: UnitPoint(x: CGFloat(0.3 + 0.15 * sin(t * 0.3)),
+                                                 y: CGFloat(0.25 + 0.12 * cos(t * 0.25))),
+                               startRadius: 0, endRadius: 460)
+                    .blur(radius: 36)
+                    .opacity(0.5)
+                RadialGradient(colors: [Theme.accent2.opacity(0.5), .clear],
+                               center: UnitPoint(x: CGFloat(0.75 + 0.12 * cos(t * 0.22)),
+                                                 y: CGFloat(0.72 + 0.1 * sin(t * 0.27))),
+                               startRadius: 0, endRadius: 500)
+                    .blur(radius: 36)
+                    .opacity(0.45)
+                LinearGradient(colors: [Theme.glow.opacity(0.35), .clear],
+                               startPoint: .top, endPoint: .bottom)
+                    .opacity(0.5)
             }
             .ignoresSafeArea()
         }
-    }
-
-    private let meshColors: [Color] = [
-        Theme.glow,    Theme.accent,   Theme.glow,
-        Theme.accent2, Theme.accent,   Theme.accent2,
-        Theme.glow,    Theme.accent2,  Theme.glow,
-    ]
-
-    private func meshPoints(at t: TimeInterval) -> [SIMD2<Float>] {
-        func osc(_ base: Double, _ amp: Double, _ speed: Double, _ phase: Double) -> Float {
-            Float(base + amp * sin(t * speed + phase))
-        }
-        return [
-            SIMD2<Float>(0, 0),
-            SIMD2<Float>(osc(0.5, 0.18, 0.625, 0.0), 0),
-            SIMD2<Float>(1, 0),
-            SIMD2<Float>(0, osc(0.5, 0.18, 0.55, 1.0)),
-            SIMD2<Float>(osc(0.5, 0.12, 0.75, 2.0), osc(0.5, 0.12, 0.675, 3.0)),
-            SIMD2<Float>(1, osc(0.5, 0.18, 0.60, 4.0)),
-            SIMD2<Float>(0, 1),
-            SIMD2<Float>(osc(0.5, 0.18, 0.65, 5.0), 1),
-            SIMD2<Float>(1, 1),
-        ]
     }
 }
 

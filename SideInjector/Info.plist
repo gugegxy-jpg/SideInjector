@@ -23,8 +23,16 @@
     <false/>
     <key>UIRequiresFullScreen</key>
     <true/>
-    <key>UILaunchStoryboardName</key>
-    <string>LaunchScreen</string>
+    <key>UILaunchScreen</key>
+    <dict>
+        <key>BackgroundColor</key>
+        <dict>
+            <key>colorSpace</key>
+            <string>srgb</string>
+            <key>components</key>
+            <string>0.000 0.000 0.000 1.000</string>
+        </dict>
+    </dict>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>

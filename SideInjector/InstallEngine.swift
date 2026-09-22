@@ -90,6 +90,9 @@ final class InstallEngine {
 
     /// 检测本地回环隧道是否可用（绿/红）。
     /// 探测：连接 lockdownd → QueryType 握手 → 试探 StartSession(nil) 判断是否支持设备端自配对。
+    ///
+    /// 注意：本机回环隧道依赖 **Mac 端 SideInstaller 的本地服务** 监听在 62078 上。
+    /// 仅连 LocalDevVPN 不够——必须 Mac 上跑着 SideInstaller 并与此设备配对。
     func diagnose() async -> TunnelStatus {
         let conn: NWConnection
         do {
@@ -98,20 +101,20 @@ final class InstallEngine {
             }
         } catch {
             return TunnelStatus(ok: false,
-                                message: "本地回环隧道未建立：\(error.localizedDescription)",
+                                message: "连接 \(lockdownHost):\(lockdownPort) 超时：仅连 LocalDevVPN 不够，需 Mac 端 SideInstaller 运行并与此设备配对（监听 62078）。或点「分享已签名 IPA」用 AltStore/SideStore 手动安装。",
                                 deviceClass: nil, selfPair: nil)
         }
         defer { conn.cancel() }
         let ld = LockdownClient(connection: conn)
-        let resp: [String: Any]
         do {
-            resp = try await withTimeout(seconds: 3) { try await ld.queryType() }
+            _ = try await withTimeout(seconds: 3) { try await ld.queryType() }
         } catch {
-            return TunnelStatus(ok: true,
-                                message: "隧道可连接，但 lockdownd 握手未完成",
+            return TunnelStatus(ok: false,
+                                message: "隧道可连通（VPN 路由正常），但设备端 lockdownd 无响应：需 Mac 端 SideInstaller 监听 \(lockdownPort)。或点「分享已签名 IPA」手动安装。",
                                 deviceClass: nil, selfPair: nil)
         }
-        let deviceClass = resp["Type"] as? String
+        let resp = try? await withTimeout(seconds: 3) { try await ld.queryType() }
+        let deviceClass = resp?["Type"] as? String
         var selfPair: Bool? = nil
         do {
             try await withTimeout(seconds: 3) { try await ld.startSession(pairing: nil) }

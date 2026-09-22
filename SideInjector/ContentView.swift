@@ -3,205 +3,252 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var model: Model
     @EnvironmentObject var log: LogStore
-    @State private var showLogs = false
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 18) {
-                    header
-
-                    envCard
-
-                    sectionCard(title: "开发证书") {
-                        FileRow(title: "P12 证书", url: $model.certP12)
-                        Divider()
-                        SecureField("P12 密码", text: $model.certPass)
-                            .submitLabel(.done)
-                            .textContentType(.password)
-                            .toolbar {
-                                ToolbarItem(placement: .keyboard) {
-                                    Button("完成") { hideKeyboard() }
-                                }
-                            }
-                        Divider()
-                        FileRow(title: "描述文件 (mobileprovision)", url: $model.profile)
-                        Divider()
-                        FileRow(title: "配对文件 (iOS18–26 需要)", url: $model.pairingFile)
+                    header.cascadeItem(0)
+                    certCard.cascadeItem(1)
+                    inputCard.cascadeItem(2)
+                    tunnelCard.cascadeItem(3)
+                    if model.busy || model.stageIndex >= 0 {
+                        progressCard.transition(.cardAppear)
                     }
-
-                    sectionCard(title: "输入") {
-                        FileRow(title: "IPA 文件", url: $model.ipa)
-                        Divider()
-                        FileRow(title: "要注入的 dylib", url: $model.dylib)
-                        Divider()
-                        TextField("注入后文件名", text: $model.dylibName)
-                    }
-
-                    actionButton
-
-                    statusCard
-
-                    if showLogs {
-                        sectionCard(title: "日志") {
-                            ScrollView {
-                                Text(log.text)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .frame(minHeight: 200, maxHeight: 320)
-                        }
-                        .animation(.easeInOut, value: showLogs)
-                    }
+                    actionButton.cascadeItem(4)
+                    logCard.cascadeItem(5)
                 }
-                .frame(maxWidth: .infinity, alignment: .top)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
+                .padding(20)
+                .animation(.smooth(duration: 0.35), value: model.busy)
+                .animation(.smooth(duration: 0.35), value: model.stageIndex)
+                .animation(.smooth(duration: 0.35), value: model.tunnelStatus?.ok)
             }
-            .siBackdrop()
-            .onAppear { model.checkEnvironment() }
+            .background(AppBackground())
             .navigationTitle("SideInjector")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        withAnimation { showLogs.toggle() }
-                    } label: {
-                        Image(systemName: showLogs ? "doc.plaintext.fill" : "doc.plaintext")
-                    }
-                }
-            }
+            .navigationBarTitleDisplayMode(.inline)
+            .preferredColorScheme(.dark)
+            .tint(Theme.accent)
+            .onAppear { model.checkEnvironment() }
+            .scrollDismissesKeyboard(.interactively)
         }
     }
 
     // MARK: - 头部
 
     private var header: some View {
-        VStack(spacing: 6) {
-            Image(systemName: "syringe.fill")
-                .font(.system(size: 42))
-                .foregroundStyle(.linearGradient(colors: [.cyan, .blue], startPoint: .top, endPoint: .bottom))
-            Text("SideInjector")
-                .font(.title.bold())
-                .foregroundStyle(.primary)
-            Text(UILook.isLiquidGlass ? "Liquid Glass · iOS 26+" : "毛玻璃 · iOS < 26")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+        BrandHeader(icon: "syringe.fill",
+                    title: "SideInjector",
+                    subtitle: UILook.isLiquidGlass ? "Liquid Glass · iOS 26+" : "毛玻璃 · iOS 17+",
+                    animateIcon: model.busy) {
+            statusPill
+                .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .top)))
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 8)
     }
 
-    // MARK: - 卡片
-
-    private func sectionCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label(title, systemImage: "folder.fill.badge.gear")
-                .font(.headline)
-                .foregroundStyle(.secondary)
-            content()
-        }
-        .padding(16)
-        .siGlass()
-        .frame(maxWidth: .infinity)
+    private var statusPill: some View {
+        let ok = model.tunnelStatus?.ok
+        return StatusPill(
+            text: ok == true ? "隧道已连通" : (ok == false ? "隧道未连接" : "检测中"),
+            systemImage: ok == true ? "checkmark.shield.fill" : (ok == false ? "shield.slash.fill" : "shield"),
+            color: ok == true ? .green : (ok == false ? .red : .secondary)
+        )
     }
 
-    // MARK: - 主操作按钮
+    // MARK: - 开发证书
 
-    private var actionButton: some View {
-        Button {
-            model.run()
-        } label: {
-            HStack(spacing: 12) {
-                if model.busy {
-                    ProgressView()
-                        .tint(.white)
-                } else {
-                    Image(systemName: "bolt.fill")
-                }
-                Text(model.busy ? "处理中…" : "注入 + 签名 + 安装")
-                    .font(.headline)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .foregroundStyle(.white)
-        }
-        .siGlassButton(tint: model.busy ? .gray : .blue)
-        .frame(maxWidth: .infinity)
-        .disabled(model.busy)
-    }
-
-    // MARK: - 状态 / 进度
-
-    private func hideKeyboard() {
-        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                         to: nil, from: nil, for: nil)
-    }
-
-    /// 安装环境检测卡片：本地回环隧道是否「绿」。
-    private var envCard: some View {
-        sectionCard(title: "安装环境") {
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(model.tunnelStatus?.ok == true ? Color.green
-                          : (model.tunnelStatus?.ok == false ? Color.red : Color.gray))
-                    .frame(width: 12, height: 12)
-                    .shadow(color: (model.tunnelStatus?.ok == true ? Color.green
-                                    : (model.tunnelStatus?.ok == false ? Color.red : Color.clear))
-                                    .opacity(0.6), radius: 4)
-                if let s = model.tunnelStatus {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(s.message)
-                            .font(.subheadline)
-                            .foregroundStyle(.primary)
-                        if let dc = s.deviceClass {
-                            Text("lockdownd: \(dc)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+    private var certCard: some View {
+        PanelCard {
+            VStack(alignment: .leading, spacing: 12) {
+                sectionTitle("开发证书", systemImage: "folder.fill.badge.gear")
+                FileRow(title: "P12 证书", url: $model.certP12)
+                Divider()
+                SecureField("P12 密码", text: $model.certPass)
+                    .submitLabel(.done)
+                    .textContentType(.password)
+                    .fieldBackground()
+                    .toolbar {
+                        ToolbarItem(placement: .keyboard) {
+                            Button("完成") { hideKeyboard() }
                         }
                     }
-                } else {
-                    ProgressView().tint(.secondary)
-                    Text("检测中…").foregroundStyle(.secondary)
+                Divider()
+                FileRow(title: "描述文件 (mobileprovision)", url: $model.profile)
+                Divider()
+                FileRow(title: "配对文件 (iOS 18–26 需要)", url: $model.pairingFile)
+            }
+        }
+    }
+
+    // MARK: - 输入
+
+    private var inputCard: some View {
+        PanelCard {
+            VStack(alignment: .leading, spacing: 12) {
+                sectionTitle("输入", systemImage: "doc.badge.plus")
+                FileRow(title: "IPA 文件", url: $model.ipa)
+                Divider()
+                FileRow(title: "要注入的 dylib", url: $model.dylib)
+                Divider()
+                TextField("注入后文件名", text: $model.dylibName)
+                    .textFieldStyle(.plain)
+                    .fieldBackground()
+            }
+        }
+    }
+
+    // MARK: - 安装环境（本地回环隧道）
+
+    private var tunnelCard: some View {
+        let ok = model.tunnelStatus?.ok
+        let tint: Color = ok == true ? .green : (ok == false ? .red : Theme.accent2)
+        return CalloutCard(tint: tint) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: ok == true ? "checkmark.shield.fill"
+                      : (ok == false ? "shield.slash.fill" : "shield.fill"))
+                    .font(.title2)
+                    .foregroundStyle(tint)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(ok == true ? "本地回环隧道已连通"
+                         : (ok == false ? "本地回环隧道未建立" : "正在检测安装环境…"))
+                        .font(.subheadline.weight(.semibold))
+                    if let s = model.tunnelStatus {
+                        Text(s.message)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        ProgressView().controlSize(.small)
+                    }
                 }
-                Spacer()
+                Spacer(minLength: 4)
                 Button {
                     model.checkEnvironment()
                 } label: {
                     Image(systemName: "arrow.clockwise")
                         .foregroundStyle(.secondary)
+                        .padding(6)
+                        .background(Circle().fill(.white.opacity(0.08)))
                 }
+                .buttonStyle(.plain)
             }
         }
     }
 
-    private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: model.busy ? "hourglass.circle" : "info.circle")
-                Text(model.status)
-                    .font(.subheadline)
-                    .foregroundStyle(.primary)
-            }
-            if model.stageIndex >= 0 || model.busy {
-                VStack(alignment: .leading, spacing: 8) {
+    // MARK: - 进度
+
+    private var progressCard: some View {
+        PanelCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Text(model.busy ? "处理中" : "已完成")
+                        .font(.headline)
+                    Spacer(minLength: 4)
+                    Text("\(Int(progress * 100))%")
+                        .font(.headline.monospacedDigit())
+                        .foregroundStyle(Theme.accent)
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(Color(.tertiarySystemFill))
+                            .overlay(Capsule().strokeBorder(.white.opacity(0.05), lineWidth: 1))
+                        Capsule()
+                            .fill(Theme.brand)
+                            .frame(width: max(12, geo.size.width * progress))
+                            .animation(.smooth(duration: 0.45), value: progress)
+                    }
+                }
+                .frame(height: 10)
+                VStack(spacing: 0) {
                     ForEach(Array(model.stages.enumerated()), id: \.offset) { idx, title in
-                        HStack(spacing: 10) {
-                            Image(systemName: idx < model.stageIndex ? "checkmark.circle.fill"
-                                          : (idx == model.stageIndex && model.busy ? "circle.fill" : "circle"))
-                                .foregroundStyle(idx < model.stageIndex ? .green
-                                                 : (idx == model.stageIndex ? .blue : .secondary))
-                            Text(title)
-                                .font(.footnote)
-                                .foregroundStyle(idx == model.stageIndex ? .primary : .secondary)
+                        stepRow(idx: idx, title: title)
+                        if idx < model.stages.count - 1 {
+                            Divider().padding(.leading, 28)
                         }
                     }
                 }
             }
         }
-        .padding(16)
-        .siGlass()
-        .frame(maxWidth: .infinity)
+    }
+
+    private func stepRow(idx: Int, title: String) -> some View {
+        let done = idx < model.stageIndex
+        let active = idx == model.stageIndex && model.busy
+        return HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(done ? Color.green : (active ? Theme.accent : Color(.secondarySystemBackground)))
+                    .frame(width: 24, height: 24)
+                Image(systemName: done ? "checkmark" : "circle")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(done || active ? .white : .secondary)
+            }
+            Text(title)
+                .font(.subheadline)
+                .foregroundStyle(active ? .primary : (done ? .primary : .secondary))
+                .animation(.smooth(duration: 0.3), value: active)
+            Spacer()
+        }
+        .frame(minHeight: 28)
+    }
+
+    private var progress: Double {
+        let count = Double(max(1, model.stages.count))
+        guard model.stageIndex >= 0 else { return 0 }
+        let idx = Double(model.stageIndex)
+        return model.busy ? min((idx + 0.5) / count, 1) : 1
+    }
+
+    // MARK: - 主操作
+
+    private var actionButton: some View {
+        Button {
+            model.run()
+        } label: {
+            HStack(spacing: 10) {
+                if model.busy {
+                    ProgressView().tint(.white)
+                    Text("处理中…")
+                } else {
+                    Image(systemName: "syringe.fill")
+                    Text("注入 + 签名 + 安装")
+                }
+            }
+        }
+        .buttonStyle(PrimaryButtonStyle())
+        .disabled(model.busy)
+    }
+
+    // MARK: - 日志
+
+    private var logCard: some View {
+        PanelCard {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionTitle("日志", systemImage: "doc.plaintext")
+                ScrollView {
+                    Text(log.text)
+                        .font(.system(.caption, design: .monospaced))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(minHeight: 160, maxHeight: 300)
+            }
+        }
+    }
+
+    // MARK: - 工具
+
+    private func sectionTitle(_ title: String, systemImage: String) -> some View {
+        Label {
+            Text(title).font(.headline)
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(Theme.brand)
+        }
+    }
+
+    private func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                         to: nil, from: nil, for: nil)
     }
 }
 
@@ -224,6 +271,7 @@ struct FileRow: View {
                     .lineLimit(1)
             }
         }
+        .buttonStyle(.plain)
     }
 
     private func rootVC() -> UIViewController? {

@@ -50,17 +50,6 @@ extension View {
 /// 全屏渐变背景，衬托玻璃层级。
 extension View {
     func siBackdrop() -> some View {
-        self.background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.07, green: 0.09, blue: 0.18),
-                    Color(red: 0.12, green: 0.08, blue: 0.22),
-                    Color(red: 0.04, green: 0.13, blue: 0.20)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-        )
+        self.background(AppBackground())
     }
 }

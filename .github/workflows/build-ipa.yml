@@ -33,7 +33,7 @@ jobs:
         run: |
           export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
           export IPHONEOS_DEPLOYMENT_TARGET=17.0
-          cargo install apple-codesign@0.27.0 --target aarch64-apple-ios --root /tmp/rcodesign-ios --locked
+          cargo install apple-codesign@0.27.0 --target aarch64-apple-ios --root /tmp/rcodesign-ios
           mkdir -p SideInjector
           cp /tmp/rcodesign-ios/bin/rcodesign SideInjector/rcodesign
           chmod +x SideInjector/rcodesign

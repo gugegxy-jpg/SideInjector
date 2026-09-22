@@ -10,6 +10,8 @@ crate-type = ["staticlib"]
 [dependencies]
 anyhow = "1"
 zip = "2"
-# 注意：签名首选「打包进 App 的 rcodesign 二进制」（见 sign.rs）。
-# 若要走纯 Rust 库签名，可启用下方依赖并按 sign.rs 注释对接 apple-codesign API。
-# apple-codesign = "0.27"
+# 进程内库签名：iOS 禁止 App fork/exec 子进程（spawn 会报 operation not permitted），
+# 不能把 rcodesign 当外部二进制调用，因此直接链接 apple-codesign。
+# default-features=false 关掉 notarize，避免 aws-sdk-s3/app-store-connect 等重依赖拖累 iOS 交叉编译。
+apple-codesign = { version = "0.27", default-features = false }
+plist = "1"

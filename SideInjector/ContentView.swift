@@ -17,10 +17,15 @@ struct ContentView: View {
                         FileRow(title: "P12 证书", url: $model.certP12)
                         Divider()
                         SecureField("P12 密码", text: $model.certPass)
+                            .submitLabel(.done)
+                            .textContentType(.password)
+                            .toolbar {
+                                ToolbarItem(placement: .keyboard) {
+                                    Button("完成") { hideKeyboard() }
+                                }
+                            }
                         Divider()
                         FileRow(title: "描述文件 (mobileprovision)", url: $model.profile)
-                        Divider()
-                        TextField("Team ID", text: $model.teamId)
                         Divider()
                         FileRow(title: "配对文件 (iOS18–26 需要)", url: $model.pairingFile)
                     }
@@ -127,6 +132,11 @@ struct ContentView: View {
     }
 
     // MARK: - 状态 / 进度
+
+    private func hideKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                         to: nil, from: nil, for: nil)
+    }
 
     /// 安装环境检测卡片：本地回环隧道是否「绿」。
     private var envCard: some View {

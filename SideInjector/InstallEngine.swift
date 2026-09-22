@@ -48,7 +48,7 @@ final class InstallEngine {
     private let lockdownHost = "127.0.0.1"
     private let lockdownPort: UInt16 = 62078
 
-    func install(ipaPath: String, teamId: String, pairingURL: URL?) async -> InstallResult {
+    func install(ipaPath: String, pairingURL: URL?) async -> InstallResult {
         LogStore.shared.append("install: 建立本地回环隧道 → \(lockdownHost):\(lockdownPort)")
         let pairing = pairingURL.flatMap { loadPairing($0) }
 
@@ -79,7 +79,7 @@ final class InstallEngine {
             let ip = try await connectTLS(host: lockdownHost, port: svc.port, ssl: svc.ssl)
             defer { ip.cancel() }
             let inst = InstallationProxy(connection: ip)
-            try await inst.install(ipaPath: ipaPath, teamId: teamId)
+            try await inst.install(ipaPath: ipaPath)
             return .init(ok: true, message: "安装请求已发送，设备正在安装")
         } catch {
             return .init(ok: false, message: "回环隧道安装失败：\(error.localizedDescription)")
@@ -281,7 +281,7 @@ final class InstallationProxy {
     }
 
     /// 通过 PackagePath 安装已位于设备上的 IPA（需 lockdownd/installd 可读该路径）。
-    func install(ipaPath: String, teamId: String) async throws {
+    func install(ipaPath: String) async throws {
         let req: [String: Any] = [
             "Command": "Install",
             "PackagePath": ipaPath,

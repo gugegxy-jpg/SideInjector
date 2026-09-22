@@ -8,7 +8,6 @@ final class Model: ObservableObject {
     @Published var certP12: URL?
     @Published var certPass: String = ""
     @Published var profile: URL?
-    @Published var teamId: String = ""
     /// iOS 18–26 需要 PC 生成的配对文件（pairing record）；iOS 27+ 可设备端自配对。
     @Published var pairingFile: URL?
 
@@ -92,7 +91,7 @@ final class Model: ObservableObject {
 
             self.setStage(2, "重签…")
             code = r.sign(app: app.path, p12: self.certP12?.path, pw: self.certPass,
-                          prov: self.profile?.path, team: self.teamId)
+                          prov: self.profile?.path, team: "")
             if code != 0 { self.finish("重签失败（检查证书/描述文件/Team ID）"); self.stopAccess(&accessed); return }
 
             self.setStage(3, "打包 IPA…")
@@ -104,7 +103,6 @@ final class Model: ObservableObject {
             self.setStage(4, "通过本地回环隧道安装…")
             let installResult = await InstallEngine.shared.install(
                 ipaPath: outIpa.path,
-                teamId: self.teamId,
                 pairingURL: self.pairingFile
             )
             self.stopAccess(&accessed)

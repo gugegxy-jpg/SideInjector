@@ -27,7 +27,7 @@ jobs:
         run: brew install xcodegen
 
       - name: Build Rust xcframework
-        run: cd core && ./build_xcframework.sh
+        run: cd core && bash ./build_xcframework.sh
 
       - name: Provide rcodesign (iOS, optional)
         run: |

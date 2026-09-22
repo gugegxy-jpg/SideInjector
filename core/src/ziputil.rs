@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 

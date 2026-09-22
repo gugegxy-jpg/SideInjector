@@ -106,15 +106,15 @@ final class InstallEngine {
         }
         defer { conn.cancel() }
         let ld = LockdownClient(connection: conn)
+        let resp: [String: Any]
         do {
-            _ = try await withTimeout(seconds: 3) { try await ld.queryType() }
+            resp = try await withTimeout(seconds: 3) { try await ld.queryType() }
         } catch {
             return TunnelStatus(ok: false,
                                 message: "隧道可连通（VPN 路由正常），但设备端 lockdownd 无响应：需 Mac 端 SideInstaller 监听 \(lockdownPort)。或点「分享已签名 IPA」手动安装。",
                                 deviceClass: nil, selfPair: nil)
         }
-        let resp = try? await withTimeout(seconds: 3) { try await ld.queryType() }
-        let deviceClass = resp?["Type"] as? String
+        let deviceClass = resp["Type"] as? String
         var selfPair: Bool? = nil
         do {
             try await withTimeout(seconds: 3) { try await ld.startSession(pairing: nil) }

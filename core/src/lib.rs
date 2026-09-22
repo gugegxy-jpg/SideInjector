@@ -13,6 +13,7 @@ mod inject;
 mod sign;
 mod install;
 mod ziputil;
+mod pair;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -144,5 +145,13 @@ pub extern "C" fn si_install_ipa(ipa: *const c_char) -> c_int {
             log_msg(&format!("install error: {e}"));
             -1
         }
+    }
+}
+
+/// 释放由 core 分配并返回给 Swift 的 C 字符串。
+#[no_mangle]
+pub extern "C" fn si_string_free(p: *mut c_char) {
+    if !p.is_null() {
+        unsafe { drop(CString::from_raw(p)); }
     }
 }

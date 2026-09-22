@@ -60,6 +60,9 @@ final class Model: ObservableObject {
         // signed.ipa 放在 tmp 之外，避免被一起打包回 IPA
         let outIpa = fm.temporaryDirectory.appendingPathComponent("signed_\(UUID().uuidString).ipa")
 
+        // 在主线程先读一次隧道状态，避免在后台任务里访问 @Published 造成数据竞争
+        let installViaTunnel = self.tunnelStatus?.ok == true
+
         Task.detached { [weak self] in
             guard let self else { return }
             let r = RustBridge.shared
@@ -108,7 +111,7 @@ final class Model: ObservableObject {
 
             // 安装：优先走本地回环隧道（参考 SideInstaller 的 LocalDevVPN 机制）；
             // 隧道不可用时（无配对 Mac / 未装 LocalDevVPN）不致命，改为提示手动安装。
-            if self.tunnelStatus?.ok == true {
+            if installViaTunnel {
                 self.setStage(4, "通过本地回环隧道安装…")
                 let installResult = await InstallEngine.shared.install(
                     ipaPath: outIpa.path,

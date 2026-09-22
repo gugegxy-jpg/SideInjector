@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject var log: LogStore
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var presentingShare = false
+    @ObservedObject private var pairing = PairingController.shared
 
     var body: some View {
         NavigationStack {
@@ -20,6 +21,7 @@ struct ContentView: View {
                             certCard.cascadeItem(1)
                             inputCard.cascadeItem(2)
                             tunnelCard.cascadeItem(3)
+                            pairingCard
                             if model.busy || model.stageIndex >= 0 {
                                 progressCard.transition(.cardAppear)
                             }
@@ -158,6 +160,44 @@ struct ContentView: View {
                         .background(Circle().fill(.white.opacity(0.08)))
                 }
                 .buttonStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - 设备配对
+
+    private var pairingCard: some View {
+        PanelCard {
+            VStack(alignment: .leading, spacing: 12) {
+                sectionTitle("设备配对（iOS 27+，无需 Mac）", systemImage: "link.badge.plus")
+                HStack(spacing: 10) {
+                    Image(systemName: pairing.pairedDeviceName != nil ? "checkmark.circle.fill" : "link.circle")
+                        .foregroundStyle(pairing.pairedDeviceName != nil ? .green : Theme.accent)
+                    Text(pairing.status)
+                        .font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    if pairing.isPairing {
+                        Button("取消") { pairing.stopPairing() }
+                            .buttonStyle(.bordered)
+                    } else {
+                        Button("开始配对") { pairing.startPairing() }
+                            .buttonStyle(.bordered)
+                    }
+                }
+                if let pin = pairing.pin {
+                    VStack(spacing: 6) {
+                        Text("在设备上输入此配对码")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                        Text(pin)
+                            .font(.system(size: 42, weight: .bold, design: .rounded))
+                            .tracking(6)
+                            .foregroundStyle(Theme.accent)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .transition(.cardAppear)
+                }
             }
         }
     }

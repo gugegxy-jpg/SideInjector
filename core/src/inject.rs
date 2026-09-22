@@ -9,13 +9,30 @@
 use crate::log_msg;
 use anyhow::{bail, Result};
 use std::fs;
-use std::path::Path;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
+const MH_MAGIC: u32 = 0xfeed_face;
 const MH_MAGIC_64: u32 = 0xfeed_facf;
-const LC_SEGMENT_64: u32 = 0x19;
+const MH_CIGAM: u32 = 0xcefa_edfe;
+const MH_CIGAM_64: u32 = 0xcffa_edfe;
+const FAT_MAGIC: u32 = 0xcafe_babe;
+const FAT_MAGIC_64: u32 = 0xcafe_babf;
+const FAT_CIGAM: u32 = 0xbeba_feca;
+const FAT_CIGAM_64: u32 = 0xbfba_feca;
+
+const LC_SYMTAB: u32 = 0x2;
+const LC_DYSYMTAB: u32 = 0xb;
 const LC_LOAD_DYLIB: u32 = 0x0c;
+const LC_SEGMENT_64: u32 = 0x19;
 const LC_CODE_SIGNATURE: u32 = 0x1d;
 const LC_DYLD_INFO_ONLY: u32 = 0x22;
+const LC_FUNCTION_STARTS: u32 = 0x26;
+const LC_DATA_IN_CODE: u32 = 0x29;
+const LC_ENCRYPTION_INFO_64: u32 = 0x2c;
+const LC_LINKER_OPTIMIZATION_HINT: u32 = 0x2e;
+const LC_DYLD_EXPORTS_TRIE: u32 = 0x33;
+const LC_DYLD_CHAINED_FIXUPS: u32 = 0x34;
 
 fn rd_u32(b: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
@@ -26,10 +43,10 @@ fn wr_u32(b: &mut [u8], off: usize, v: u32) {
 
 /// 复制 dylib 到 <app>/Frameworks/<name>，并向主二进制插入加载命令。
 pub fn inject_dylib(app_dir: &Path, dylib_src: &Path, dylib_name: &str) -> Result<()> {
-    let info = fs::read(app_dir.join("Info.plist"))?;
-    let exe_name = executable_name(&info)
-        .ok_or_else(|| anyhow::anyhow!("Info.plist 中未找到 CFBundleExecutable"))?;
-    let exe_path = app_dir.join(&exe_name);
+    // 主可执行文件不再依赖 Info.plist 文本解析（.app 里的 Info.plist 常为二进制 plist，
+    // 之前的字符串查找会失败）。改为扫描 .app 根目录里唯一的 Mach-O 文件。
+    let exe_path = find_main_executable(app_dir)
+        .ok_or_else(|| anyhow::anyhow!("未在 .app 根目录找到主可执行文件（Mach-O）"))?;
 
     let fw = app_dir.join("Frameworks");
     fs::create_dir_all(&fw)?;
@@ -41,8 +58,38 @@ pub fn inject_dylib(app_dir: &Path, dylib_src: &Path, dylib_name: &str) -> Resul
     inject_load_dylib(&mut buf, &load_path)?;
     fs::write(&exe_path, &buf)?;
 
+    let exe_name = exe_path.file_name().and_then(|s| s.to_str()).unwrap_or("?");
     log_msg(&format!("已注入 {load_path} -> {exe_name}"));
     Ok(())
+}
+
+/// 扫描 .app 根目录（不递归），返回唯一的 Mach-O（含 fat）可执行文件。
+/// 主二进制是根目录里唯一的 Mach-O；Frameworks/PlugIns 均在子目录中。
+fn find_main_executable(app_dir: &Path) -> Option<PathBuf> {
+    for entry in fs::read_dir(app_dir).ok()?.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            continue;
+        }
+        let mut f = fs::File::open(&p).ok()?;
+        let mut magic = [0u8; 4];
+        if f.read_exact(&mut magic).is_err() {
+            continue;
+        }
+        let m = u32::from_le_bytes(magic);
+        if is_macho(m) || is_fat(m) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn is_macho(m: u32) -> bool {
+    matches!(m, MH_MAGIC | MH_MAGIC_64 | MH_CIGAM | MH_CIGAM_64)
+}
+
+fn is_fat(m: u32) -> bool {
+    matches!(m, FAT_MAGIC | FAT_MAGIC_64 | FAT_CIGAM | FAT_CIGAM_64)
 }
 
 fn inject_load_dylib(buf: &mut Vec<u8>, load_path: &str) -> Result<()> {
@@ -80,7 +127,7 @@ fn inject_load_dylib(buf: &mut Vec<u8>, load_path: &str) -> Result<()> {
     wr_u32(buf, 16, ncmds as u32 + 1);
     wr_u32(buf, 20, sizeofcmds as u32 + lc_size as u32);
 
-    // 修正所有受位移影响的文件偏移
+    // 修正所有受位移影响的文件偏移（覆盖常见的 offset 型 load command）
     let mut off = hdr_size;
     for _ in 0..ncmds {
         let cmd = rd_u32(buf, off);
@@ -92,18 +139,32 @@ fn inject_load_dylib(buf: &mut Vec<u8>, load_path: &str) -> Result<()> {
                 let old = u64::from_le_bytes(buf[p..p + 8].try_into().unwrap());
                 buf[p..p + 8].copy_from_slice(&(old + delta).to_le_bytes());
             }
-            LC_CODE_SIGNATURE => {
-                let p = off + 8;
-                let old = rd_u32(buf, p) as u64;
-                wr_u32(buf, p, (old + delta) as u32);
+            LC_CODE_SIGNATURE
+            | LC_FUNCTION_STARTS
+            | LC_DATA_IN_CODE
+            | LC_LINKER_OPTIMIZATION_HINT
+            | LC_DYLD_EXPORTS_TRIE
+            | LC_DYLD_CHAINED_FIXUPS => {
+                // linkedit_data_command：dataoff 在 off+8
+                shift_u32_off(buf, off + 8, delta);
+            }
+            LC_SYMTAB => {
+                shift_u32_off(buf, off + 8, delta); // symoff
+                shift_u32_off(buf, off + 16, delta); // stroff
+            }
+            LC_DYSYMTAB => {
+                // tocoff/modtaboff/extrefsymoff/indirectsymoff/extreloff/locreloff
+                for p in [32usize, 40, 48, 56, 64, 72] {
+                    shift_u32_off(buf, off + p, delta);
+                }
+            }
+            LC_ENCRYPTION_INFO_64 => {
+                shift_u32_off(buf, off + 8, delta); // cryptoff
             }
             LC_DYLD_INFO_ONLY => {
-                for f in [8usize, 16, 24, 32, 40] {
-                    let p = off + f;
-                    let old = rd_u32(buf, p) as u64;
-                    if old != 0 {
-                        wr_u32(buf, p, (old + delta) as u32);
-                    }
+                // rebase_off/bind_off/weak_bind_off/lazy_bind_off/export_off
+                for p in [8usize, 16, 24, 32, 40] {
+                    shift_u32_off(buf, off + p, delta);
                 }
             }
             _ => {}
@@ -113,13 +174,10 @@ fn inject_load_dylib(buf: &mut Vec<u8>, load_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// 极简 plist 解析：取 CFBundleExecutable 对应的字符串值。
-fn executable_name(plist: &[u8]) -> Option<String> {
-    let s = String::from_utf8_lossy(plist);
-    let key = "<key>CFBundleExecutable</key>";
-    let i = s.find(key)? + key.len();
-    let rest = &s[i..];
-    let j = rest.find("<string>")? + "<string>".len();
-    let end = rest[j..].find("</string>")?;
-    Some(rest[j..j + end].to_string())
+/// 若某 u32 文件偏移非 0，则整体加上 delta（0 表示不存在，不能误加）。
+fn shift_u32_off(buf: &mut [u8], p: usize, delta: u64) {
+    let old = rd_u32(buf, p) as u64;
+    if old != 0 {
+        wr_u32(buf, p, (old + delta) as u32);
+    }
 }

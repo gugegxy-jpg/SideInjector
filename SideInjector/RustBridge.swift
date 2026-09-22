@@ -19,6 +19,33 @@ func si_zip_ipa(_ dir: UnsafePointer<CChar>, _ out: UnsafePointer<CChar>) -> Int
 @_silgen_name("si_install_ipa")
 func si_install_ipa(_ ipa: UnsafePointer<CChar>) -> Int32
 
+@_silgen_name("si_pairing_start")
+func si_pairing_start(_ outPath: UnsafePointer<CChar>) -> Int32
+
+@_silgen_name("si_pairing_status")
+func si_pairing_status() -> Int32
+
+@_silgen_name("si_pairing_service_port")
+func si_pairing_service_port() -> Int32
+
+@_silgen_name("si_pairing_service_identifier")
+func si_pairing_service_identifier() -> UnsafePointer<CChar>?
+
+@_silgen_name("si_pairing_txt_json")
+func si_pairing_txt_json() -> UnsafePointer<CChar>?
+
+@_silgen_name("si_pairing_pin")
+func si_pairing_pin() -> UnsafePointer<CChar>?
+
+@_silgen_name("si_pairing_device_name")
+func si_pairing_device_name() -> UnsafePointer<CChar>?
+
+@_silgen_name("si_pairing_error")
+func si_pairing_error() -> UnsafePointer<CChar>?
+
+@_silgen_name("si_string_free")
+func si_string_free(_ p: UnsafeMutablePointer<CChar>?)
+
 final class RustBridge {
     static let shared = RustBridge()
     private var logCb: (@convention(c) (UnsafePointer<CChar>) -> Void)?
@@ -60,4 +87,26 @@ final class RustBridge {
     func install(ipa: String) -> Int32 {
         ipa.withCString { i in si_install_ipa(i) }
     }
+
+    // MARK: - 设备端自配对
+
+    func pairingStart(outPath: String) -> Int32 {
+        outPath.withCString { si_pairing_start($0) }
+    }
+
+    func pairingStatus() -> Int32 { si_pairing_status() }
+
+    func pairingServicePort() -> Int32 { si_pairing_service_port() }
+
+    private func pairingString(_ f: () -> UnsafePointer<CChar>?) -> String? {
+        guard let p = f() else { return nil }
+        defer { si_string_free(UnsafeMutablePointer(mutating: p)) }
+        return String(cString: p)
+    }
+
+    func pairingServiceIdentifier() -> String? { pairingString { si_pairing_service_identifier() } }
+    func pairingTxtJSON() -> String? { pairingString { si_pairing_txt_json() } }
+    func pairingPIN() -> String? { pairingString { si_pairing_pin() } }
+    func pairingDeviceName() -> String? { pairingString { si_pairing_device_name() } }
+    func pairingError() -> String? { pairingString { si_pairing_error() } }
 }

@@ -27,6 +27,9 @@ final class Model: ObservableObject {
     // 安装环境检测（本地回环隧道是否「绿」）
     @Published var tunnelStatus: TunnelStatus? = nil
 
+    /// 已签名 IPA 的本地路径；生成后可分享/保存到「文件」App 手动安装。
+    @Published var shareItem: URL? = nil
+
     func checkEnvironment() {
         tunnelStatus = nil
         Task.detached { [weak self] in
@@ -44,6 +47,7 @@ final class Model: ObservableObject {
         busy = true
         status = "开始处理…"
         stageIndex = -1
+        shareItem = nil
         LogStore.shared.clear()
 
         // 文件来自「文件」App，属于安全作用域资源，必须先声明访问权，
@@ -99,14 +103,23 @@ final class Model: ObservableObject {
             code = r.zip(dir: tmp.path, out: outIpa.path)
             if code != 0 { self.finish("重新打包失败"); self.stopAccess(&accessed); return }
 
-            // 安装：走本地回环隧道（参考 SideInstaller 的 LocalDevVPN 机制）
-            self.setStage(4, "通过本地回环隧道安装…")
-            let installResult = await InstallEngine.shared.install(
-                ipaPath: outIpa.path,
-                pairingURL: self.pairingFile
-            )
-            self.stopAccess(&accessed)
-            self.finish(installResult.ok ? "已完成：已提交设备安装" : "安装未完成：\(installResult.message)")
+            // 已生成可安装的已签名 IPA（无论是否走自动安装都先暴露给用户）
+            DispatchQueue.main.async { self.shareItem = outIpa }
+
+            // 安装：优先走本地回环隧道（参考 SideInstaller 的 LocalDevVPN 机制）；
+            // 隧道不可用时（无配对 Mac / 未装 LocalDevVPN）不致命，改为提示手动安装。
+            if self.tunnelStatus?.ok == true {
+                self.setStage(4, "通过本地回环隧道安装…")
+                let installResult = await InstallEngine.shared.install(
+                    ipaPath: outIpa.path,
+                    pairingURL: self.pairingFile
+                )
+                self.stopAccess(&accessed)
+                self.finish(installResult.ok ? "已完成：已提交设备安装" : "安装未完成：\(installResult.message)")
+            } else {
+                self.stopAccess(&accessed)
+                self.finish("已生成已签名 IPA：本机回环隧道不可用，请点「分享已签名 IPA」用 AltStore/SideStore 安装")
+            }
         }
     }
 

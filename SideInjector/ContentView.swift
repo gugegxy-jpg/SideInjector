@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var model: Model
     @EnvironmentObject var log: LogStore
+    @State private var presentingShare = false
 
     var body: some View {
         NavigationStack {
@@ -19,12 +20,23 @@ struct ContentView: View {
                             progressCard.transition(.cardAppear)
                         }
                         actionButton.cascadeItem(4)
+                        if let _ = model.shareItem {
+                            Button {
+                                presentingShare = true
+                            } label: {
+                                Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
+                            }
+                            .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
+                            .transition(.cardAppear)
+                        }
                         logCard.cascadeItem(5)
                     }
                     .padding(20)
+                    .frame(maxWidth: 760)
                     .animation(.smooth(duration: 0.35), value: model.busy)
                     .animation(.smooth(duration: 0.35), value: model.stageIndex)
                     .animation(.smooth(duration: 0.35), value: model.tunnelStatus?.ok)
+                    .animation(.smooth(duration: 0.35), value: model.shareItem != nil)
                 }
                 .scrollDismissesKeyboard(.interactively)
             }
@@ -32,6 +44,11 @@ struct ContentView: View {
             .preferredColorScheme(.dark)
             .tint(Theme.accent)
             .onAppear { model.checkEnvironment() }
+            .sheet(isPresented: $presentingShare) {
+                if let url = model.shareItem {
+                    ShareSheet(activityItems: [url])
+                }
+            }
         }
     }
 

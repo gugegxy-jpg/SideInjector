@@ -19,6 +19,7 @@
 mod inject;
 mod sign;
 mod install;
+mod rp;
 mod ziputil;
 mod pair;
 mod bundle;

@@ -82,6 +82,34 @@ pub fn install_ipa(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
 }
 
 async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
+    // 通路 0（免电脑，优先尝试）：RemotePairing 隧道。
+    //
+    // 设备端自连 RSD 端口（49152）**要 TLS-PSK**，密钥来自 RemotePairing 会话；
+    // 而配对记录可以在设备上自配对生成（本 App「设备配对」），所以这条路不需要电脑。
+    // 本版先做「验证 + 建隧道」并打印隧道端点，随后的 RSD 安装将改为经该隧道进行。
+    if let Some(pairing) = pairing {
+        for host in probe_hosts() {
+            let attempt = tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                crate::rp::probe(pairing, host),
+            )
+            .await;
+            match attempt {
+                Ok(Ok(ep)) => {
+                    log_msg(&format!(
+                        "install: RP 隧道可用（{host}）—— 设备侧 {}，RSD 端口 {}",
+                        ep.server_address, ep.rsd_port
+                    ));
+                    break;
+                }
+                Ok(Err(e)) => log_msg(&format!("install: RP 隧道尝试失败（{host}）：{e:#}")),
+                Err(_) => log_msg(&format!("install: RP 隧道尝试超时（{host}，8s）")),
+            }
+        }
+    } else {
+        log_msg("install: 未提供配对文件，跳过 RP 隧道通路（该通路需要自配对记录）");
+    }
+
     // 先探测再动手。原因（实测）：
     //   - 设备自连 49152，TCP 能连上，但发 RSD 升级请求后被 RST → 对端不是明文 remoted；
     //   - 127.0.0.1:62078 直接返回 EPERM（沙盒拒绝直连回环的 lockdownd），

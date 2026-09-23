@@ -20,7 +20,6 @@ struct ContentView: View {
                             header.cascadeItem(0)
                             certCard.cascadeItem(1)
                             inputCard.cascadeItem(2)
-                            tunnelCard.cascadeItem(3)
                             pairingCard
                             if model.busy || model.stageIndex >= 0 {
                                 progressCard.transition(.cardAppear)
@@ -46,7 +45,6 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                     .animation(.smooth(duration: 0.35), value: model.busy)
                     .animation(.smooth(duration: 0.35), value: model.stageIndex)
-                    .animation(.smooth(duration: 0.35), value: model.tunnelStatus?.ok)
                     .animation(.smooth(duration: 0.35), value: model.shareItem != nil)
                 }
                 .scrollDismissesKeyboard(.interactively)
@@ -54,7 +52,6 @@ struct ContentView: View {
             .navigationBarHidden(true)
             .preferredColorScheme(.dark)
             .tint(Theme.accent)
-            .onAppear { model.checkEnvironment() }
             .sheet(isPresented: $presentingShare) {
                 if let url = model.shareItem {
                     ShareSheet(activityItems: [url])
@@ -70,18 +67,8 @@ struct ContentView: View {
                     title: "SideInjector",
                     subtitle: UILook.isLiquidGlass ? "Liquid Glass · iOS 26+" : "毛玻璃 · iOS 17+",
                     animateIcon: model.busy) {
-            statusPill
-                .transition(.opacity.combined(with: .scale(scale: 0.85, anchor: .top)))
+            EmptyView()
         }
-    }
-
-    private var statusPill: some View {
-        let ok = model.tunnelStatus?.ok
-        return StatusPill(
-            text: ok == true ? "隧道已连通" : (ok == false ? "隧道未连接" : "检测中"),
-            systemImage: ok == true ? "checkmark.shield.fill" : (ok == false ? "shield.slash.fill" : "shield"),
-            color: ok == true ? .green : (ok == false ? .red : .secondary)
-        )
     }
 
     // MARK: - 开发证书
@@ -132,44 +119,6 @@ struct ContentView: View {
                 TextField("显示名称（留空不改）", text: $model.displayName)
                     .textFieldStyle(.plain)
                     .fieldBackground()
-            }
-        }
-    }
-
-    // MARK: - 安装环境（本地回环隧道）
-
-    private var tunnelCard: some View {
-        let ok = model.tunnelStatus?.ok
-        let tint: Color = ok == true ? .green : (ok == false ? .red : Theme.accent2)
-        return CalloutCard(tint: tint) {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: ok == true ? "checkmark.shield.fill"
-                      : (ok == false ? "shield.slash.fill" : "shield.fill"))
-                    .font(.title2)
-                    .foregroundStyle(tint)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(ok == true ? "本地回环隧道已连通"
-                         : (ok == false ? "本地回环隧道未建立" : "正在检测安装环境…"))
-                        .font(.subheadline.weight(.semibold))
-                    if let s = model.tunnelStatus {
-                        Text(s.message)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        ProgressView().controlSize(.small)
-                    }
-                }
-                Spacer(minLength: 4)
-                Button {
-                    model.checkEnvironment()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                        .foregroundStyle(.secondary)
-                        .padding(6)
-                        .background(Circle().fill(.white.opacity(0.08)))
-                }
-                .buttonStyle(.plain)
             }
         }
     }

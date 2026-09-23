@@ -28,20 +28,8 @@ final class Model: ObservableObject {
     let stages = ["解压 IPA", "注入 dylib", "重签", "打包 IPA", "安装到设备"]
     @Published var stageIndex: Int = -1   // -1 表示空闲
 
-    // 安装环境检测（本地回环隧道是否「绿」）
-    @Published var tunnelStatus: TunnelStatus? = nil
-
     /// 已签名 IPA 的本地路径；生成后可分享/保存到「文件」App 手动安装。
     @Published var shareItem: URL? = nil
-
-    func checkEnvironment() {
-        tunnelStatus = nil
-        Task.detached { [weak self] in
-            guard let self else { return }
-            let s = await InstallEngine.shared.diagnose()
-            DispatchQueue.main.async { self.tunnelStatus = s }
-        }
-    }
 
     func run() {
         guard let ipa else {
@@ -72,9 +60,7 @@ final class Model: ObservableObject {
         // signed.ipa 放在 tmp 之外，避免被一起打包回 IPA
         let outIpa = fm.temporaryDirectory.appendingPathComponent("signed_\(UUID().uuidString).ipa")
 
-        // 在主线程先读一次隧道状态，避免在后台任务里访问 @Published 造成数据竞争
-        let installViaTunnel = self.tunnelStatus?.ok == true
-        // 同样先捕获 Bundle 信息，避免后台任务访问 @Published
+        // 在主线程先捕获 Bundle 信息，避免后台任务访问 @Published
         let bundleId = self.bundleId
         let displayName = self.displayName
         // 证书/描述文件/密码/dylib 也必须在主线程捕获，避免后台任务访问 @Published 造成数据竞争（可能读到空值）
@@ -140,6 +126,8 @@ final class Model: ObservableObject {
 
             // 安装：优先走本地回环隧道（参考 SideInstaller 的 LocalDevVPN 机制）；
             // 隧道不可用时（无配对 Mac / 未装 LocalDevVPN）不致命，改为提示手动安装。
+            // 注：此处不再展示隧道「绿/红」检测，仅在真正安装前内部探测一次。
+            let installViaTunnel = await InstallEngine.shared.diagnose().ok
             if installViaTunnel {
                 self.setStage(4, "通过本地回环隧道安装…")
                 let installResult = await InstallEngine.shared.install(

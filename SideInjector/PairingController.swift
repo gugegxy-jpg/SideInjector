@@ -94,7 +94,7 @@ final class PairingController: ObservableObject {
         service.setTXTRecord(NetService.data(fromTXTRecord: txt))
         service.publish()
         netService = service
-        setStatus("正在广播，请到 设置 → 隐私与安全性 → 开发者模式 完成配对")
+        setStatus("正在广播，请在本机打开 设置 → 开发者 → 配对，选择「SideInjector」并输入上方配对码（若没有「开发者」菜单，请先到 设置 → 隐私与安全性 → 开发者模式 开启；并允许本 App 的「本地网络」权限）")
     }
 
     private func stopAdvertising() {

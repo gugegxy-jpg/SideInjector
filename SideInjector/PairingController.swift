@@ -88,18 +88,25 @@ final class PairingController: ObservableObject {
     /// 系统只在 App 首次进行本地网络 I/O（Bonjour 浏览/广播）时弹窗；
     /// NetService.publish() 在某些 iOS 版本上不一定可靠，这里用 NWBrowser 显式浏览本机
     /// Bonjour 服务来确保弹窗出现。浏览本身不影响配对，仅用于触发授权。
-    private func requestLocalNetworkPermission() {
+    /// 注意：NWBrowser 的 type 必须是「不带末尾点」的形式（与 NSBonjourServices 一致），
+    /// NetService 才需要带末尾点的完整类型。
+    func requestLocalNetworkPermission() {
         permissionProbe?.cancel()
         let browser = NWBrowser(
-            for: .bonjour(type: "_remotepairing-pairable-host._tcp.", domain: "local."),
+            for: .bonjour(type: "_remotepairing-pairable-host._tcp", domain: "local."),
             using: NWParameters()
         )
         browser.stateUpdateHandler = { [weak self] state in
-            if case .failed = state {
-                // 多为用户曾在「设置」中拒绝本地网络权限：系统不再弹窗，
-                // 需引导到 设置 → SideInjector → 本地网络 打开后重试。
+            if case let .failed(error) = state {
+                // 失败原因可能是：用户曾在「设置」中拒绝本地网络权限，或当前未连接 Wi-Fi。
+                // 系统不会再弹窗，需引导到 设置 → SideInjector → 本地网络 检查。
                 Task { @MainActor in
-                    self?.status = "本地网络权限被拒绝：请到 设置 → SideInjector → 本地网络 打开，再重试配对"
+                    let ns = error as NSError
+                    if ns.domain == "NWErrorDomain" && ns.code == 1 {
+                        self?.status = "本地网络权限被拒绝：请到 设置 → SideInjector → 本地网络 打开，再重试配对"
+                    } else {
+                        self?.status = "本地网络请求失败（请确认已连接 Wi-Fi）：\(error.localizedDescription)"
+                    }
                 }
             }
         }

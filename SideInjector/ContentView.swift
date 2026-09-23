@@ -126,6 +126,7 @@ struct ContentView: View {
         PanelCard {
             VStack(alignment: .leading, spacing: 12) {
                 sectionTitle("设备配对（iOS 27+，无需 Mac）", systemImage: "link.badge.plus")
+                // 进入配对卡片时即主动请求「本地网络」授权，确保开关尽早出现在 设置 中
                 HStack(spacing: 10) {
                     Image(systemName: pairing.pairedDeviceName != nil ? "checkmark.circle.fill" : "link.circle")
                         .foregroundStyle(pairing.pairedDeviceName != nil ? .green : Theme.accent)
@@ -156,6 +157,7 @@ struct ContentView: View {
                 }
             }
         }
+        .onAppear { PairingController.shared.requestLocalNetworkPermission() }
     }
 
     // MARK: - 进度

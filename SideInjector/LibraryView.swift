@@ -260,9 +260,9 @@ struct CertEditView: View {
 
     @State private var name: String
     @State private var password: String
-    @State private var newP12: URL?
-    @State private var newProv: URL?
-    @State private var errorTip: String?
+    @State private var newP12: URL? = nil
+    @State private var newProv: URL? = nil
+    @State private var errorTip: String? = nil
 
     init(cert: SavedCert) {
         self.cert = cert

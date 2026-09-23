@@ -58,7 +58,7 @@ final class InstallEngine {
 
         do {
             let conn = try await withTimeout(seconds: 6) {
-                try await connectTLS(host: lockdownHost, port: lockdownPort)
+                try await connectTLS(host: self.lockdownHost, port: self.lockdownPort)
             }
             defer { conn.cancel() }
 
@@ -85,7 +85,7 @@ final class InstallEngine {
             LogStore.shared.append("install: 已取得 installation_proxy 服务（端口 \(svc.port)）")
 
             let ip = try await withTimeout(seconds: 6) {
-                try await connectTLS(host: lockdownHost, port: svc.port, ssl: svc.ssl)
+                try await connectTLS(host: self.lockdownHost, port: svc.port, ssl: svc.ssl)
             }
             defer { ip.cancel() }
             let inst = InstallationProxy(connection: ip)

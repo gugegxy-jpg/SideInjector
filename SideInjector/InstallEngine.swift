@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import Security
+import Darwin
 
 /// 安装结果
 struct InstallResult {
@@ -30,6 +31,46 @@ func withTimeout<T>(seconds: Double, _ body: @escaping () async throws -> T) asy
     }
 }
 
+/// 枚举本机 IPv4 候选地址，用来定位「loopback VPN」把设备自身暴露出来的那个端点。
+///
+/// 为什么不能写死 127.0.0.1：不同 loopback VPN 映射到的地址并不固定
+/// （StosVPN 常见 10.7.0.1，也有 10.7.0.2 等），写死回环地址会直接连接超时。
+/// 参考 SideInstaller 的做法：把 RSD 地址、回环、以及各本地接口地址一起作为候选，
+/// 在一个统一超时内逐个尝试。
+enum TunnelNet {
+    static func candidateHosts() -> [String] {
+        var tunnels: [String] = []   // utun/ipsec/ppp/tap 等 VPN 隧道接口
+        var others: [String] = []    // en0/lo0 等普通接口
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        if getifaddrs(&ifaddr) == 0, let first = ifaddr {
+            defer { freeifaddrs(ifaddr) }
+            var ptr: UnsafeMutablePointer<ifaddrs>? = first
+            while let cur = ptr {
+                let entry = cur.pointee
+                if let sa = entry.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) {
+                    let name = String(cString: entry.ifa_name)
+                    var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    if getnameinfo(sa, socklen_t(sa.pointee.sa_len),
+                                   &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                        let ip = String(cString: buf)
+                        if name.hasPrefix("utun") || name.hasPrefix("ipsec")
+                            || name.hasPrefix("ppp") || name.hasPrefix("tap") {
+                            tunnels.append(ip)
+                        } else {
+                            others.append(ip)
+                        }
+                    }
+                }
+                ptr = entry.ifa_next
+            }
+        }
+        var seen = Set<String>()
+        // VPN 隧道地址优先；再补几个常见映射地址与回环兜底。
+        return (tunnels + others + ["10.7.0.1", "10.7.0.2", "127.0.0.1"])
+            .filter { !$0.hasPrefix("169.254.") && seen.insert($0).inserted }
+    }
+}
+
 /// 设备端安装引擎 —— 参考 FrizzleM/SideInstaller 的「本地回环隧道」思路。
 ///
 /// 机制：通过 LocalDevVPN（本地 VPN/DNS 描述文件）让设备自身向本机
@@ -44,21 +85,47 @@ func withTimeout<T>(seconds: Double, _ body: @escaping () async throws -> T) asy
 final class InstallEngine {
     static let shared = InstallEngine()
 
-    /// 本地回环隧道端点（LocalDevVPN 把设备自身的 lockdownd 暴露到回环地址）。
-    private let lockdownHost = "127.0.0.1"
+    /// lockdownd 固定端口。
     private let lockdownPort: UInt16 = 62078
+
+    /// 实际跑通的隧道端点（多候选探测成功后记录，后续服务连接沿用）。
+    private var tunnelHost = "127.0.0.1"
 
     /// 安装并**逐步上报真实进度**（0…1）。
     /// 只有 installd 真正返回 Complete 才算成功——绝不以进度值判定成功。
     func install(ipaPath: String,
                  pairingURL: URL?,
                  onProgress: @escaping (Double, String) -> Void) async -> InstallResult {
-        LogStore.shared.append("install: 建立本地回环隧道 → \(lockdownHost):\(lockdownPort)")
+        let candidates = TunnelNet.candidateHosts()
+        LogStore.shared.append("install: 探测本地回环隧道端点（候选：\(candidates.joined(separator: "、"))）")
         let pairing = pairingURL.flatMap { loadPairing($0) }
 
         do {
-            let conn = try await withTimeout(seconds: 6) {
-                try await connectTLS(host: self.lockdownHost, port: self.lockdownPort)
+            // 逐个候选尝试：loopback VPN 把设备自身的 lockdownd 暴露在某个本地地址上，
+            // 具体是哪个地址随 VPN 实现而变 —— 写死 127.0.0.1 就会直接连接超时。
+            var locked: NWConnection?
+            var lastErr: Error?
+            for host in candidates {
+                do {
+                    let c = try await withTimeout(seconds: 3) {
+                        try await connectTLS(host: host, port: self.lockdownPort)
+                    }
+                    locked = c
+                    self.tunnelHost = host
+                    LogStore.shared.append("install: 隧道端点 \(host):\(self.lockdownPort) 已连通")
+                    break
+                } catch {
+                    lastErr = error
+                    LogStore.shared.append("install: 端点 \(host) 无响应（\(error.localizedDescription)）")
+                }
+            }
+            guard let conn = locked else {
+                return .init(ok: false, message: """
+                回环隧道安装失败：候选端点都连不上（\(candidates.joined(separator: "、"))）。
+                请先安装并开启 loopback VPN（StosVPN / SideStore 的 VPN 描述文件）—— 它的作用就是把本设备自身的 lockdownd/CoreDevice 暴露到本地地址，没有它任何地址都连不通。
+                也可改用「分享已签名 IPA」，交给 AltStore / SideStore 安装。
+                最后错误：\(lastErr?.localizedDescription ?? "未知")
+                """)
             }
             defer { conn.cancel() }
 
@@ -84,8 +151,8 @@ final class InstallEngine {
             }
             LogStore.shared.append("install: 已取得 installation_proxy 服务（端口 \(svc.port)）")
 
-            let ip = try await withTimeout(seconds: 6) {
-                try await connectTLS(host: self.lockdownHost, port: svc.port, ssl: svc.ssl)
+            let ip = try await withTimeout(seconds: 10) {
+                try await connectTLS(host: self.tunnelHost, port: svc.port, ssl: svc.ssl)
             }
             defer { ip.cancel() }
             let inst = InstallationProxy(connection: ip)
@@ -106,17 +173,27 @@ final class InstallEngine {
     /// 检测本地回环隧道是否可用（绿/红）。
     /// 探测：连接 lockdownd → QueryType 握手 → 试探 StartSession(nil) 判断是否支持设备端自配对。
     ///
-    /// 注意：本机回环隧道依赖 **Mac 端 SideInstaller 的本地服务** 监听在 62078 上。
-    /// 仅连 LocalDevVPN 不够——必须 Mac 上跑着 SideInstaller 并与此设备配对。
+    /// 注意：这条隧道依赖 **loopback VPN**（StosVPN / SideStore 的 VPN 描述文件）——
+    /// 它把本设备自身的 lockdownd/CoreDevice 暴露到某个本地地址上；没有它任何地址都连不通。
     func diagnose() async -> TunnelStatus {
-        let conn: NWConnection
-        do {
-            conn = try await withTimeout(seconds: 3) {
-                try await connectTLS(host: self.lockdownHost, port: self.lockdownPort)
+        let candidates = TunnelNet.candidateHosts()
+        var found: NWConnection?
+        var lastErr: Error?
+        for host in candidates {
+            do {
+                let c = try await withTimeout(seconds: 3) {
+                    try await connectTLS(host: host, port: self.lockdownPort)
+                }
+                found = c
+                self.tunnelHost = host
+                break
+            } catch {
+                lastErr = error
             }
-        } catch {
+        }
+        guard let conn = found else {
             return TunnelStatus(ok: false,
-                                message: "连接 \(lockdownHost):\(lockdownPort) 超时：仅连 LocalDevVPN 不够，需 Mac 端 SideInstaller 运行并与此设备配对（监听 62078）。或点「分享已签名 IPA」用 AltStore/SideStore 手动安装。",
+                                message: "候选端点都连不上（\(candidates.joined(separator: "、"))）：请先安装并开启 loopback VPN（StosVPN / SideStore 的 VPN 描述文件），它负责把本设备自身的 lockdownd/CoreDevice 暴露到本地地址。最后错误：\(lastErr?.localizedDescription ?? "未知")",
                                 deviceClass: nil, selfPair: nil)
         }
         defer { conn.cancel() }
@@ -126,7 +203,7 @@ final class InstallEngine {
             resp = try await withTimeout(seconds: 3) { try await ld.queryType() }
         } catch {
             return TunnelStatus(ok: false,
-                                message: "隧道可连通（VPN 路由正常），但设备端 lockdownd 无响应：需 Mac 端 SideInstaller 监听 \(lockdownPort)。或点「分享已签名 IPA」手动安装。",
+                                message: "端点可连通，但 lockdownd 无响应（端口 \(lockdownPort)）：请确认 loopback VPN 仍在运行；也可点「分享已签名 IPA」用 AltStore/SideStore 手动安装。",
                                 deviceClass: nil, selfPair: nil)
         }
         let deviceClass = resp["Type"] as? String

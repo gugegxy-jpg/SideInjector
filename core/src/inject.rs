@@ -111,8 +111,19 @@ fn inject_load_dylib(buf: &mut Vec<u8>, load_path: &str) -> Result<()> {
     inject_thin(buf, load_path)
 }
 
-/// 单个「小端 64 位」Mach-O 切片的注入：把段/数据区整体右移，腾出空间放新的 LC_LOAD_DYLIB，
-/// 再把所有受位移影响的文件偏移（段 fileoff、symtab、dyld info、代码签名…）统一修正。
+/// 单个「小端 64 位」Mach-O 切片的注入。
+///
+/// 两种做法，**优先第一种**：
+///
+/// 1. **写进加载命令区的空隙**：`sizeofcmds` 末尾到第一个 section 数据之间通常有几千字节
+///    填充（`__text` 起点按页对齐），把新 LC **覆盖**在那段填充上即可 —— 只改
+///    `ncmds`/`sizeofcmds`，**不移动任何字节**，所有偏移天然保持正确。最稳。
+///
+/// 2. 空隙不够时才「整体右移」。这时**必须**把所有受影响的偏移都改对，否则 dyld 映射错位，
+///    表现就是「安装正常、一启动就闪退」：
+///      - 段：整体在插入点之后的移 `fileoff`；**跨插入点的 `__TEXT` 必须保持 `fileoff = 0`**，
+///        只把 `filesize` 加上 delta；
+///      - 段内每个 section 的 `offset` / `reloff` 也要跟着移（之前漏了这一步）。
 fn inject_thin(buf: &mut Vec<u8>, load_path: &str) -> Result<()> {
     let ncmds = rd_u32(buf, 16) as usize;
     let sizeofcmds = rd_u32(buf, 20) as usize;
@@ -135,27 +146,65 @@ fn inject_thin(buf: &mut Vec<u8>, load_path: &str) -> Result<()> {
     lc[24..24 + name.len()].copy_from_slice(name);
     lc[24 + name.len()] = 0;
 
-    // 把段/数据区整体右移 delta，腾出空间给新 LC
+    // ① 首选：写进加载命令区的空隙（覆盖填充字节，不移动任何数据）
+    if let Some(gap_end) = first_section_offset(buf, ncmds) {
+        if lc_end + lc_size <= gap_end {
+            buf[lc_end..lc_end + lc_size].copy_from_slice(&lc);
+            wr_u32(buf, 16, ncmds as u32 + 1);
+            wr_u32(buf, 20, (sizeofcmds + lc_size) as u32);
+            crate::log_detail(&format!(
+                "注入：写入加载命令区空隙（{lc_size} 字节，未移动任何数据）"
+            ));
+            return Ok(());
+        }
+        crate::log_detail(&format!(
+            "注入：加载命令区空隙不足（需要 {lc_size}，只有 {}），改用整体右移",
+            gap_end.saturating_sub(lc_end)
+        ));
+    }
+
+    // ② 兜底：段/数据整体右移 delta
     let tail = buf[lc_end..].to_vec();
     buf.truncate(lc_end);
     buf.extend_from_slice(&lc);
     buf.extend_from_slice(&tail);
 
-    // 更新头部
     wr_u32(buf, 16, ncmds as u32 + 1);
     wr_u32(buf, 20, sizeofcmds as u32 + lc_size as u32);
 
-    // 修正所有受位移影响的文件偏移（覆盖常见的 offset 型 load command）
     let mut off = hdr_size;
     for _ in 0..ncmds {
         let cmd = rd_u32(buf, off);
         let cmdsize = rd_u32(buf, off + 4) as usize;
         match cmd {
             LC_SEGMENT_64 => {
-                // fileoff 在偏移 off+40（u64）
-                let p = off + 40;
-                let old = u64::from_le_bytes(buf[p..p + 8].try_into().unwrap());
-                buf[p..p + 8].copy_from_slice(&(old + delta).to_le_bytes());
+                // segment_command_64：fileoff(+40,u64) filesize(+48,u64) nsects(+64,u32)
+                let fileoff = rd_u64(buf, off + 40);
+                if fileoff >= lc_end as u64 {
+                    // 整段都在插入点之后：整段后移
+                    wr_u64(buf, off + 40, fileoff + delta);
+                } else {
+                    // 插入点落在这段内部（__TEXT，fileoff = 0）：起点**不动**，只加长度
+                    let filesize = rd_u64(buf, off + 48);
+                    wr_u64(buf, off + 48, filesize + delta);
+                }
+                // section_64 数组紧跟在 72 字节的命令头之后，每项 80 字节
+                let nsects = rd_u32(buf, off + 64) as usize;
+                for i in 0..nsects {
+                    let sec = off + 72 + i * 80;
+                    if sec + 80 > buf.len() {
+                        break;
+                    }
+                    // section_64：size(+40,u64) offset(+48,u32) reloff(+56,u32)
+                    let soff = rd_u32(buf, sec + 48) as u64;
+                    if soff >= lc_end as u64 {
+                        wr_u32(buf, sec + 48, (soff + delta) as u32);
+                    }
+                    let reloff = rd_u32(buf, sec + 56) as u64;
+                    if reloff != 0 && reloff >= lc_end as u64 {
+                        wr_u32(buf, sec + 56, (reloff + delta) as u32);
+                    }
+                }
             }
             LC_CODE_SIGNATURE
             | LC_FUNCTION_STARTS
@@ -190,6 +239,43 @@ fn inject_thin(buf: &mut Vec<u8>, load_path: &str) -> Result<()> {
         off += cmdsize;
     }
     Ok(())
+}
+
+fn rd_u64(b: &[u8], off: usize) -> u64 {
+    let mut v = [0u8; 8];
+    v.copy_from_slice(&b[off..off + 8]);
+    u64::from_le_bytes(v)
+}
+
+fn wr_u64(b: &mut [u8], off: usize, v: u64) {
+    b[off..off + 8].copy_from_slice(&v.to_le_bytes());
+}
+
+/// 所有 section 里**最小的数据文件偏移**（跳过 0/空 section）——也就是「加载命令区空隙」的
+/// 右边界：新 LC 只要放得下，就不需要移动任何字节。
+fn first_section_offset(buf: &[u8], ncmds: usize) -> Option<usize> {
+    let mut min: Option<usize> = None;
+    let mut off = 32usize;
+    for _ in 0..ncmds {
+        let cmd = rd_u32(buf, off);
+        let cmdsize = rd_u32(buf, off + 4) as usize;
+        if cmd == LC_SEGMENT_64 {
+            let nsects = rd_u32(buf, off + 64) as usize;
+            for i in 0..nsects {
+                let sec = off + 72 + i * 80;
+                if sec + 80 > buf.len() {
+                    break;
+                }
+                let size = rd_u64(buf, sec + 40);
+                let soff = rd_u32(buf, sec + 48) as usize;
+                if size > 0 && soff > 0 {
+                    min = Some(min.map_or(soff, |m: usize| m.min(soff)));
+                }
+            }
+        }
+        off += cmdsize;
+    }
+    min
 }
 
 /// 若某 u32 文件偏移非 0，则整体加上 delta（0 表示不存在，不能误加）。

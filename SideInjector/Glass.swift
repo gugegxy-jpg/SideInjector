@@ -45,6 +45,18 @@ extension View {
                 )
         }
     }
+
+    /// 底部页签的「悬浮玻璃胶囊」：iOS 26+ 用系统 Liquid Glass，旧系统退回毛玻璃 + 描边。
+    @ViewBuilder
+    func siGlassBar() -> some View {
+        if #available(iOS 26.0, *) {
+            self.glassEffect(in: Capsule())
+        } else {
+            self
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().stroke(Color.white.opacity(0.16), lineWidth: 1))
+        }
+    }
 }
 
 /// 全屏渐变背景，衬托玻璃层级。

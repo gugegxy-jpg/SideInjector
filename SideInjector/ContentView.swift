@@ -78,11 +78,12 @@ struct ContentView: View {
             tabButton(0, "主页", "house.fill")
             tabButton(1, "库", "books.vertical.fill")
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 4)
-        .background(.ultraThinMaterial)
-        .overlay(Divider(), alignment: .top)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+        // iOS 26+ 用系统 Liquid Glass 悬浮胶囊；旧系统退回毛玻璃胶囊。
+        .siGlassBar()
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
     }
 
     private func tabButton(_ idx: Int, _ title: String, _ icon: String) -> some View {
@@ -168,6 +169,7 @@ struct ContentView: View {
                 Divider()
                 FileRow(title: "配对文件 (iOS 18–26 需要)", url: $model.pairingFile)
             }
+            .keyboardDoneButton()
         }
     }
 

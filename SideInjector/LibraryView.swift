@@ -115,6 +115,8 @@ struct LibraryView: View {
                     Text(errorTip).font(.caption).foregroundStyle(.red)
                 }
             }
+            // 密码框等输入后，键盘上方提供「完成」以收起键盘。
+            .keyboardDoneButton()
         }
     }
 
@@ -293,6 +295,7 @@ struct CertEditView: View {
             }
             .navigationTitle("编辑证书")
             .navigationBarTitleDisplayMode(.inline)
+            .keyboardDoneButton()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }

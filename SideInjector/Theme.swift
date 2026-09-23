@@ -139,6 +139,19 @@ private struct FieldBackground: ViewModifier {
 extension View {
     /// 给 .plain 文本/密码框套上应用的凹陷字段背景。
     func fieldBackground() -> some View { modifier(FieldBackground()) }
+
+    /// 在键盘上方挂一个「完成」按钮，用于收起键盘（否则密码框输入后无处收起）。
+    func keyboardDoneButton() -> some View {
+        toolbar {
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("完成") {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                    to: nil, from: nil, for: nil)
+                }
+            }
+        }
+    }
 }
 
 // MARK: - 过渡

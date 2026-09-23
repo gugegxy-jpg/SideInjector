@@ -230,7 +230,7 @@ struct FilePickRow: View {
 
     var body: some View {
         Button {
-            let picker = DocumentPicker(types: types) { url = $0 }
+            let picker = DocumentPicker(types: types) { url = $0.first }
             topRootVC()?.present(picker, animated: true)
         } label: {
             HStack {

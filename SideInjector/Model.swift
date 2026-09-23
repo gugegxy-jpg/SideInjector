@@ -18,10 +18,10 @@ enum RunOutcome: Equatable {
 
 /// 主流程控制器。
 ///
-/// 设计要点（对齐 SideInstaller 的体验）：
+/// 设计要点：
 /// - 进度是**真实**的：只有安装真正成功才到 100%，失败/暂停绝不会显示「已完成」。
 /// - 「设备配对」是流程中的一个阶段，且**只需一次**：已配对会自动跳过。
-/// - 任一步失败即**暂停并保留现场**，用户修好环境后点「继续」从该步续跑。
+/// - 任一步失败即**暂停并保留现场**，用户可点「继续」从该步续跑，也可点「取消」放弃。
 final class Model: ObservableObject {
     static let shared = Model()
 
@@ -38,8 +38,8 @@ final class Model: ObservableObject {
 
     // MARK: - 输入
     @Published var ipa: URL?
-    @Published var dylib: URL?
-    @Published var dylibName: String = "inject.dylib"
+    /// 可一次选择多个 dylib，逐个注入（注入名默认取各自文件名）。
+    @Published var dylibs: [URL] = []
     @Published var bundleId: String = ""
     @Published var displayName: String = ""
 
@@ -68,11 +68,12 @@ final class Model: ObservableObject {
     var displayStages: [String] { mode == .installOnly ? ["安装到设备"] : stages }
     private var stepCount: Int { mode == .installOnly ? 1 : stages.count }
 
-    // MARK: - 流程上下文（用于暂停后从失败处续跑）
+    // MARK: - 流程上下文（用于暂停后从失败处续跑 / 取消后清理）
     private struct FlowContext {
         let ipaCopy: URL
         let ipaName: String
-        let dylibCopy: URL?
+        /// 已复制进沙盒的 dylib 与其注入名。
+        let dylibs: [(url: URL, name: String)]
         let p12Copy: URL
         let provCopy: URL
         let pairingCopy: URL?
@@ -81,10 +82,10 @@ final class Model: ObservableObject {
         let bundleId: String
         let displayName: String
         let certPass: String
-        let dylibName: String
     }
     private var ctx: FlowContext?
     private var resumeStep = 0
+    private var flowTask: Task<Void, Never>?
 
     // MARK: - 选中证书
 
@@ -168,17 +169,45 @@ final class Model: ObservableObject {
         }
     }
 
-    /// 取消 / 复位。
-    func reset() {
+    /// 取消当前流程：停止任务、清理临时文件、复位到空闲（保留已选输入）。
+    func cancel() {
+        guard busy else { return }
+        // 先置为 idle：流程里所有状态回调都会因 outcome == .idle 而被忽略，
+        // 避免已取消的步骤随后又把状态改回「处理中/已暂停」。
+        outcome = .idle
+        flowTask?.cancel()
+        flowTask = nil
+        cleanupTemp()
         ctx = nil
         resumeStep = 0
-        mode = .full
         installOnlyURL = nil
-        outcome = .idle
+        mode = .full
         stageIndex = -1
         progress = 0
         pauseReason = nil
-        status = "空闲"
+        shareItem = nil
+        status = "已取消"
+        LogStore.shared.append("已取消当前流程，临时文件已清理")
+    }
+
+    /// 清理本次流程用到的临时目录与临时产物。
+    private func cleanupTemp() {
+        let fm = FileManager.default
+        if let ctx {
+            try? fm.removeItem(at: ctx.ipaCopy.deletingLastPathComponent())  // si_in_*
+            try? fm.removeItem(at: ctx.tmp)                                  // si_out_*
+            try? fm.removeItem(at: ctx.outIpa)                               // signed_*.ipa
+        }
+        // 兜底：清掉可能残留的同前缀临时项。
+        if let items = try? fm.contentsOfDirectory(at: fm.temporaryDirectory,
+                                                   includingPropertiesForKeys: nil) {
+            for u in items {
+                let n = u.lastPathComponent
+                if n.hasPrefix("si_in_") || n.hasPrefix("si_out_") || n.hasPrefix("signed_") {
+                    try? fm.removeItem(at: u)
+                }
+            }
+        }
     }
 
     // MARK: - 上下文构建（把用户选的文件复制进沙盒，规避安全作用域）
@@ -202,7 +231,20 @@ final class Model: ObservableObject {
             status = "无法读取 IPA 文件（系统拒绝访问，请换用「文件」App 内可访问的位置）"
             return nil
         }
-        let dylibCopy = copyIn(dylib, "in.dylib")
+
+        // 多个 dylib：逐个复制进沙盒，注入名默认取文件名（去重、补 .dylib 后缀）。
+        var copiedDylibs: [(url: URL, name: String)] = []
+        var usedNames = Set<String>()
+        for (idx, src) in dylibs.enumerated() {
+            let base = Self.dylibInjectionName(from: src.lastPathComponent, fallbackIndex: idx)
+            let name = Self.uniqueName(base, used: &usedNames)
+            if let dst = copyIn(src, "dylib_\(idx)_\(name)") {
+                copiedDylibs.append((url: dst, name: name))
+            } else {
+                LogStore.shared.append("跳过无法读取的 dylib：\(src.lastPathComponent)")
+            }
+        }
+
         guard let p12Copy = copyIn(certP12, "cert.p12") else {
             status = "无法读取 P12 证书（系统拒绝访问）"
             return nil
@@ -217,21 +259,42 @@ final class Model: ObservableObject {
         let outIpa = fm.temporaryDirectory.appendingPathComponent("signed_\(UUID().uuidString).ipa")
 
         return FlowContext(ipaCopy: ipaCopy, ipaName: ipa.lastPathComponent,
-                           dylibCopy: dylibCopy, p12Copy: p12Copy,
+                           dylibs: copiedDylibs, p12Copy: p12Copy,
                            provCopy: provCopy, pairingCopy: pairingCopy, tmp: tmp, outIpa: outIpa,
                            bundleId: bundleId, displayName: displayName,
-                           certPass: certPass, dylibName: dylibName)
+                           certPass: certPass)
+    }
+
+    /// 由源文件名推断注入名（补 .dylib 后缀；空则用序号兜底）。
+    private static func dylibInjectionName(from file: String, fallbackIndex: Int) -> String {
+        var n = file.trimmingCharacters(in: .whitespacesAndNewlines)
+        if n.isEmpty { n = "inject\(fallbackIndex).dylib" }
+        if !n.lowercased().hasSuffix(".dylib") { n += ".dylib" }
+        return n
+    }
+
+    /// 保证注入名在本次流程内唯一（重名时追加 -2、-3…）。
+    private static func uniqueName(_ name: String, used: inout Set<String>) -> String {
+        if !used.contains(name) { used.insert(name); return name }
+        let stem = (name as NSString).deletingPathExtension
+        var i = 2
+        while true {
+            let candidate = "\(stem)-\(i).dylib"
+            if !used.contains(candidate) { used.insert(candidate); return candidate }
+            i += 1
+        }
     }
 
     // MARK: - 完整流程
 
     private func runFlow(from start: Int, ctx: FlowContext) {
-        Task.detached { [weak self] in
+        flowTask = Task.detached { [weak self] in
             guard let self else { return }
             let r = RustBridge.shared
 
             var i = start
             while i < self.stages.count {
+                if Task.isCancelled { return }
                 switch i {
                 case 0:
                     self.markRunning(0, "解压 IPA…")
@@ -244,14 +307,18 @@ final class Model: ObservableObject {
                     guard let app = self.resolveApp(tmp: ctx.tmp) else {
                         self.pause(at: 1, reason: "未在 Payload 中找到 .app"); return
                     }
-                    if let dylib = ctx.dylibCopy {
-                        self.markRunning(1, "注入 dylib…")
-                        if r.inject(app: app.path, dylib: dylib.path, name: ctx.dylibName) != 0 {
-                            self.pause(at: 1, reason: "注入 dylib 失败：主二进制可能不是单切片 arm64，或该 IPA 未砸壳"); return
+                    if ctx.dylibs.isEmpty {
+                        self.markSkipped(1, "未选择 dylib，跳过注入")
+                    } else {
+                        self.markRunning(1, "注入 dylib（\(ctx.dylibs.count) 个）…")
+                        for d in ctx.dylibs {
+                            if Task.isCancelled { return }
+                            if r.inject(app: app.path, dylib: d.url.path, name: d.name) != 0 {
+                                self.pause(at: 1, reason: "注入 \(d.name) 失败：主二进制可能不是单切片 arm64，或该 IPA 未砸壳")
+                                return
+                            }
                         }
                         self.markDone(1)
-                    } else {
-                        self.markSkipped(1, "未选择 dylib，跳过注入")
                     }
 
                 case 2:
@@ -287,6 +354,7 @@ final class Model: ObservableObject {
                         self.pause(at: 4, reason: "重新打包失败"); return
                     }
                     DispatchQueue.main.async {
+                        guard self.outcome != .idle else { return }
                         self.shareItem = ctx.outIpa
                         // 自动入库：即使后面安装失败，也能在「库」里点击直接安装。
                         IPALibrary.shared.add(url: ctx.outIpa, name: ctx.ipaName)
@@ -298,6 +366,7 @@ final class Model: ObservableObject {
                         self.markSkipped(self.pairingStage, "已配对")
                     } else {
                         DispatchQueue.main.async {
+                            guard self.outcome != .idle else { return }
                             self.stageIndex = self.pairingStage
                             self.resumeStep = self.pairingStage
                             self.outcome = .paused
@@ -335,10 +404,12 @@ final class Model: ObservableObject {
 
     private func runInstallOnly() {
         guard let url = installOnlyURL else { return }
-        Task.detached { [weak self] in
+        flowTask = Task.detached { [weak self] in
             guard let self else { return }
+            if Task.isCancelled { return }
             if !self.isPaired {
                 DispatchQueue.main.async {
+                    guard self.outcome != .idle else { return }
                     self.stageIndex = 0
                     self.resumeStep = 0
                     self.outcome = .paused
@@ -360,10 +431,11 @@ final class Model: ObservableObject {
         }
     }
 
-    // MARK: - 状态更新（统一切回主线程）
+    // MARK: - 状态更新（统一切回主线程；outcome == .idle 表示已取消，全部忽略）
 
     private func markRunning(_ i: Int, _ msg: String) {
         DispatchQueue.main.async {
+            guard self.outcome != .idle else { return }
             self.stageIndex = i
             self.status = msg
             self.progress = max(self.progress, (Double(i) + 0.2) / Double(self.stepCount))
@@ -371,11 +443,13 @@ final class Model: ObservableObject {
     }
     private func markDone(_ i: Int) {
         DispatchQueue.main.async {
+            guard self.outcome != .idle else { return }
             self.progress = max(self.progress, Double(i + 1) / Double(self.stepCount))
         }
     }
     private func markSkipped(_ i: Int, _ msg: String) {
         DispatchQueue.main.async {
+            guard self.outcome != .idle else { return }
             self.stageIndex = i
             self.status = msg + "（已跳过）"
             self.progress = max(self.progress, Double(i + 1) / Double(self.stepCount))
@@ -383,6 +457,7 @@ final class Model: ObservableObject {
     }
     private func installProgress(_ frac: Double, _ msg: String) {
         DispatchQueue.main.async {
+            guard self.outcome != .idle else { return }
             let span = 1.0 / Double(self.stepCount)
             let base = (self.mode == .installOnly ? 0 : Double(self.installStage)) / Double(self.stepCount)
             // 安装阶段内部最多到 99%，只有真正成功才由 finishSuccess 推到 100%。
@@ -392,6 +467,7 @@ final class Model: ObservableObject {
     }
     private func pause(at step: Int, reason: String) {
         DispatchQueue.main.async {
+            guard self.outcome != .idle else { return }
             self.resumeStep = step
             self.stageIndex = step
             self.outcome = .paused
@@ -401,6 +477,7 @@ final class Model: ObservableObject {
     }
     private func finishSuccess() {
         DispatchQueue.main.async {
+            guard self.outcome != .idle else { return }
             self.progress = 1
             self.stageIndex = max(0, self.stepCount - 1)
             self.outcome = .done

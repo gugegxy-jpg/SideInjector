@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var model: Model
@@ -153,11 +154,43 @@ struct ContentView: View {
                 sectionTitle("输入", systemImage: "doc.badge.plus")
                 FileRow(title: "IPA 文件", url: $model.ipa)
                 Divider()
-                FileRow(title: "要注入的 dylib", url: $model.dylib)
-                Divider()
-                TextField("注入后文件名", text: $model.dylibName)
-                    .textFieldStyle(.plain)
-                    .fieldBackground()
+                Button {
+                    let picker = DocumentPicker(types: [UTType(filenameExtension: "dylib") ?? .data, .data],
+                                                allowsMultiple: true) { urls in
+                        let existing = Set(model.dylibs.map(\.path))
+                        model.dylibs.append(contentsOf: urls.filter { !existing.contains($0.path) })
+                    }
+                    topRootVC()?.present(picker, animated: true)
+                } label: {
+                    HStack {
+                        Text("要注入的 dylib（可多选）").foregroundStyle(.primary)
+                        Spacer()
+                        Text(model.dylibs.isEmpty ? "未选择" : "\(model.dylibs.count) 个")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                if !model.dylibs.isEmpty {
+                    VStack(spacing: 0) {
+                        ForEach(model.dylibs, id: \.self) { u in
+                            HStack(spacing: 8) {
+                                Image(systemName: "shippingbox").foregroundStyle(Theme.brand)
+                                Text(u.lastPathComponent)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                Spacer(minLength: 6)
+                                Button {
+                                    model.dylibs.removeAll { $0 == u }
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                }
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
+                            }
+                            .frame(minHeight: 32)
+                        }
+                    }
+                }
                 Divider()
                 TextField("Bundle ID（留空不改）", text: $model.bundleId)
                     .textFieldStyle(.plain)
@@ -243,13 +276,32 @@ struct ContentView: View {
                             Text(reason)
                                 .font(.caption)
                                 .fixedSize(horizontal: false, vertical: true)
-                            Button {
-                                model.resume()
-                            } label: {
-                                Label("继续", systemImage: "play.fill")
+                            HStack(spacing: 10) {
+                                Button {
+                                    model.resume()
+                                } label: {
+                                    Label("继续", systemImage: "play.fill")
+                                }
+                                .buttonStyle(.borderedProminent)
+                                Button(role: .destructive) {
+                                    model.cancel()
+                                } label: {
+                                    Label("取消", systemImage: "xmark")
+                                }
+                                .buttonStyle(.bordered)
                             }
-                            .buttonStyle(.borderedProminent)
                         }
+                    }
+                } else if model.outcome == .running {
+                    // 运行中也能取消；同步 FFI 会在当前步骤返回后停下。
+                    HStack {
+                        Spacer()
+                        Button(role: .destructive) {
+                            model.cancel()
+                        } label: {
+                            Label("取消", systemImage: "xmark")
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
                 VStack(spacing: 0) {
@@ -398,7 +450,7 @@ struct FileRow: View {
 
     var body: some View {
         Button {
-            let picker = DocumentPicker { url = $0 }
+            let picker = DocumentPicker { url = $0.first }
             rootVC()?.present(picker, animated: true)
         } label: {
             HStack {

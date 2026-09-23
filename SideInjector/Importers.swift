@@ -1,20 +1,21 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 弹出「文件」App 选择单个文件，回调绝对 URL。
+/// 弹出「文件」App 选择文件（可多选），回调绝对 URL 数组。
 final class DocumentPicker: UIDocumentPickerViewController, UIDocumentPickerDelegate {
-    private let onPick: (URL) -> Void
+    private let onPick: ([URL]) -> Void
 
     init(types: [UTType] = [.init(filenameExtension: "ipa")!,
                             .init(filenameExtension: "dylib")!,
                             .init(filenameExtension: "p12")!,
                             .init(filenameExtension: "mobileprovision")!,
                             .data],
-         onPick: @escaping (URL) -> Void) {
+         allowsMultiple: Bool = false,
+         onPick: @escaping ([URL]) -> Void) {
         self.onPick = onPick
         super.init(forOpeningContentTypes: types, asCopy: true)
         self.delegate = self
-        self.allowsMultipleSelection = false
+        self.allowsMultipleSelection = allowsMultiple
     }
 
     required init?(coder: NSCoder) {
@@ -23,9 +24,7 @@ final class DocumentPicker: UIDocumentPickerViewController, UIDocumentPickerDele
 
     func documentPicker(_ controller: UIDocumentPickerViewController,
                         didPickDocumentsAt urls: [URL]) {
-        if let u = urls.first {
-            // 复制进沙盒后也能访问；这里直接回传（asCopy 已复制）
-            onPick(u)
-        }
+        // asCopy 已把文件复制进沙盒，这里直接回传。
+        onPick(urls)
     }
 }

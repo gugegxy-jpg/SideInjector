@@ -15,6 +15,9 @@ struct LibraryView: View {
     @State private var newPass = ""
     @State private var savedTip: String?
     @State private var errorTip: String?
+    @State private var editingCert: SavedCert?
+    @State private var pendingDeleteCert: SavedCert?
+    @State private var pendingDeleteIPA: SignedIPA?
 
     var body: some View {
         ScrollView {
@@ -27,6 +30,33 @@ struct LibraryView: View {
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.interactively)
+        .sheet(item: $editingCert) { CertEditView(cert: $0) }
+        .confirmationDialog("删除该证书？", isPresented: certDeleteShown, presenting: pendingDeleteCert) { c in
+            Button("删除", role: .destructive) {
+                if model.selectedCertID == c.id { model.clearSelectedCert() }
+                certs.remove(c)
+                pendingDeleteCert = nil
+            }
+            Button("取消", role: .cancel) { pendingDeleteCert = nil }
+        } message: { c in
+            Text("将删除「\(c.name)」及其保存的证书文件，不可恢复。")
+        }
+        .confirmationDialog("删除该已签名 IPA？", isPresented: ipaDeleteShown, presenting: pendingDeleteIPA) { it in
+            Button("删除", role: .destructive) {
+                ipas.remove(it)
+                pendingDeleteIPA = nil
+            }
+            Button("取消", role: .cancel) { pendingDeleteIPA = nil }
+        } message: { it in
+            Text("将删除「\(it.name)」，不可恢复。")
+        }
+    }
+
+    private var certDeleteShown: Binding<Bool> {
+        Binding(get: { pendingDeleteCert != nil }, set: { if !$0 { pendingDeleteCert = nil } })
+    }
+    private var ipaDeleteShown: Binding<Bool> {
+        Binding(get: { pendingDeleteIPA != nil }, set: { if !$0 { pendingDeleteIPA = nil } })
     }
 
     // MARK: - 证书库
@@ -100,9 +130,14 @@ struct LibraryView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
+            Button {
+                editingCert = c
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .buttonStyle(.borderless)
             Button(role: .destructive) {
-                if model.selectedCertID == c.id { model.selectedCertID = nil }
-                certs.remove(c)
+                pendingDeleteCert = c
             } label: {
                 Image(systemName: "trash")
             }
@@ -171,7 +206,7 @@ struct LibraryView: View {
             .buttonStyle(.bordered)
             .disabled(model.busy)
             Button(role: .destructive) {
-                ipas.remove(item)
+                pendingDeleteIPA = item
             } label: {
                 Image(systemName: "trash")
             }
@@ -207,9 +242,78 @@ struct FilePickRow: View {
     }
 }
 
-/// 取当前 key window 的 rootViewController，用于弹出系统文件选择器。
+/// 取「最顶层」的视图控制器（沿 presentedViewController 向上），
+/// 这样在已弹出的 sheet 里也能正常弹出系统文件选择器。
 func topRootVC() -> UIViewController? {
     let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
     let key = scenes.first(where: { $0.activationState == .foregroundActive }) ?? scenes.first
-    return key?.windows.first(where: \.isKeyWindow)?.rootViewController
+    var vc = key?.windows.first(where: \.isKeyWindow)?.rootViewController
+    while let presented = vc?.presentedViewController { vc = presented }
+    return vc
+}
+
+/// 编辑已保存的证书：改名称 / 密码，或替换 p12 / 描述文件。
+struct CertEditView: View {
+    let cert: SavedCert
+    @ObservedObject private var certs = CertStore.shared
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var name: String
+    @State private var password: String
+    @State private var newP12: URL?
+    @State private var newProv: URL?
+    @State private var errorTip: String?
+
+    init(cert: SavedCert) {
+        self.cert = cert
+        _name = State(initialValue: cert.name)
+        _password = State(initialValue: cert.password)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("名称") {
+                    TextField("名称", text: $name)
+                }
+                Section("P12 密码") {
+                    SecureField("密码", text: $password)
+                }
+                Section("替换文件（可选）") {
+                    FilePickRow(title: "P12 证书", url: $newP12,
+                                types: [UTType(filenameExtension: "p12") ?? .data, .data])
+                    FilePickRow(title: "描述文件", url: $newProv,
+                                types: [UTType(filenameExtension: "mobileprovision") ?? .data, .data])
+                }
+                if let errorTip {
+                    Section {
+                        Text(errorTip).foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("编辑证书")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") { save() }
+                }
+            }
+            .preferredColorScheme(.dark)
+        }
+    }
+
+    private func save() {
+        if certs.update(id: cert.id, name: name, password: password, p12: newP12, prov: newProv) != nil {
+            // 若编辑的是当前选中证书，立即把最新内容同步到主流程。
+            if Model.shared.selectedCertID == cert.id {
+                Model.shared.refreshSelectedCert()
+            }
+            dismiss()
+        } else {
+            errorTip = "保存失败：无法读取所选文件"
+        }
+    }
 }

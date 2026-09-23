@@ -100,6 +100,17 @@ final class Model: ObservableObject {
         certPass = cert.password
     }
 
+    /// 证书被编辑后，把最新内容同步回当前选中项。
+    func refreshSelectedCert() { applySelectedCert() }
+
+    /// 当前选中的证书被删除时调用：清空引用，避免指向已不存在的文件。
+    func clearSelectedCert() {
+        selectedCertID = nil
+        certP12 = nil
+        profile = nil
+        certPass = ""
+    }
+
     // MARK: - 入口
 
     func run() {

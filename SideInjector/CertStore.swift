@@ -77,4 +77,30 @@ final class CertStore: ObservableObject {
         try? FileManager.default.removeItem(at: dir.appendingPathComponent(cert.id.uuidString, isDirectory: true))
         persist()
     }
+
+    /// 编辑一条证书：名称/密码随时可改；p12 / 描述文件为 nil 时保持原文件不变。
+    @discardableResult
+    func update(id: UUID, name: String, password: String, p12: URL?, prov: URL?) -> SavedCert? {
+        guard let idx = certs.firstIndex(where: { $0.id == id }) else { return nil }
+        let folder = dir.appendingPathComponent(id.uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+        func copy(_ src: URL, _ dst: URL) -> Bool {
+            let a = src.startAccessingSecurityScopedResource()
+            defer { if a { src.stopAccessingSecurityScopedResource() } }
+            try? FileManager.default.removeItem(at: dst)
+            return (try? FileManager.default.copyItem(at: src, to: dst)) != nil
+        }
+
+        if let p12, !copy(p12, folder.appendingPathComponent("cert.p12")) { return nil }
+        if let prov, !copy(prov, folder.appendingPathComponent("profile.mobileprovision")) { return nil }
+
+        var cert = certs[idx]
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { cert.name = trimmed }
+        cert.password = password
+        certs[idx] = cert
+        persist()
+        return cert
+    }
 }

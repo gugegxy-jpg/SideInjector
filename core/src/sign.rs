@@ -105,6 +105,7 @@ pub fn sign_bundle(
     log_msg(&format!("深签（自实现）：待重签嵌套代码 {} 项", nested.len()));
     let mut failed = 0usize;
     let mut signed_exe = 0usize;
+    let mut reported = 0usize;
     for item in &nested {
         let is_dir = item.is_dir();
         let id = if is_dir { bundle_id_of(item) } else { None };
@@ -112,6 +113,14 @@ pub fn sign_bundle(
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default();
+
+        // 逐项日志一律走「细节」级（只进后台日志文件）：一轮 90 多项，全打到界面上没意义。
+        // 每 20 项补一条**重要**日志，界面才有进度感。
+        let done = signed_exe + failed;
+        if done > 0 && done % 20 == 0 && done != reported {
+            reported = done;
+            log_msg(&format!("重签进度 {done}/{}…", nested.len()));
+        }
 
         // ①-a 带主可执行文件的 bundle（.framework / .appex / .app）：只重签它的主可执行。
         //      （为什么不用「签整个 bundle」，见文件头说明。）
@@ -122,7 +131,7 @@ pub fn sign_bundle(
         //       org.cocoapods.KAPinField）。只签 Mach-O 时 apple-codesign **不会**自动
         //      取 Info.plist，必须显式 `set_binary_identifier`。
         if let Some(exe_path) = if is_dir { main_executable_of(item) } else { None } {
-            log_msg(&format!(
+            crate::log_detail(&format!(
                 "  重签（主可执行）：{name}（CFBundleIdentifier={}）",
                 id.clone().unwrap_or_else(|| "**缺失**".to_string())
             ));
@@ -153,14 +162,14 @@ pub fn sign_bundle(
         //       根目录的 `Settings.bundle`）：它不算可签名的 bundle，apple-bundles 直接拒绝。
         //       保持原样即可（iOS 只当普通资源），不该记成「失败」让日志变吓人。
         if is_dir && info_plist_of(item).is_none() {
-            log_msg(&format!(
+            crate::log_detail(&format!(
                 "  跳过（无 Info.plist，非可签名 bundle，保持原样）：{name}"
             ));
             continue;
         }
 
         // ①-b-2 其余项：没有主可执行的资源 bundle（只封资源）、以及注入的 .dylib。
-        log_msg(&format!("  重签（资源/二进制）：{name}"));
+        crate::log_detail(&format!("  重签（资源/二进制）：{name}"));
         match sign_in_place(item, &nested_settings) {
             Ok(()) => {}
             Err(e) => {
@@ -455,18 +464,17 @@ fn sign_nested_executable(
 
     // 自证：把刚生成的签名里的 CodeDirectory 标识读回来，和期望值比对。
     // （installd 的 `MismatchedBundleIDSigningIdentifier` 校验的就是这个值。）
+    // 一致就不打日志（一轮 60 项，界面只该留异常）；不一致才值得看。
     match (code_directory_identifier(&signed), bundle_id) {
-        (Some(got), Some(want)) if got == want => {
-            log_msg(&format!("    标识自检 ✓ {want}"));
-        }
+        (Some(got), Some(want)) if got == want => {}
         (Some(got), want) => {
             log_msg(&format!(
-                "    ⚠️ 标识自检 ✗ 实际「{got}」，期望「{}」",
+                "  ⚠️ 标识自检不符：实际「{got}」，期望「{}」",
                 want.unwrap_or("(无)")
             ));
         }
         (None, _) => {
-            log_msg("    ⚠️ 标识自检 ✗ 读不回来（新签名可能没写进去）");
+            log_msg("  ⚠️ 标识自检：读不回签名标识（新签名可能没写进去）");
         }
     }
 

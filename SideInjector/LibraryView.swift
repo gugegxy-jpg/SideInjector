@@ -20,18 +20,25 @@ struct LibraryView: View {
     @State private var pendingDeleteIPA: SignedIPA?
     /// 导入已签名 IPA 的结果提示。
     @State private var ipaTip: String?
+    /// 当前缓存占用（打开页面 / 刷新 / 清理后重新统计）。
+    @State private var cacheBytes: Int64 = 0
+    /// 缓存区提示（刷新结果 / 释放大小）。
+    @State private var cacheTip: String?
+    @State private var confirmCleanCache = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
                 certSection
                 ipaSection
+                storageSection
             }
             .padding(20)
             .padding(.bottom, 12)
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.immediately)   // 一滚动就收起键盘
+        .onAppear { cacheBytes = Storage.cacheBytes() }
         .sheet(item: $editingCert) { CertEditView(cert: $0) }
         .confirmationDialog("删除该证书？", isPresented: certDeleteShown, presenting: pendingDeleteCert) { c in
             Button("删除", role: .destructive) {
@@ -52,6 +59,16 @@ struct LibraryView: View {
         } message: { it in
             Text("将删除「\(it.name)」，不可恢复。")
         }
+        .confirmationDialog("清理缓存？", isPresented: $confirmCleanCache) {
+            Button("清理", role: .destructive) {
+                let freed = Storage.cleanCache()
+                cacheBytes = Storage.cacheBytes()
+                cacheTip = freed > 0 ? "已释放 \(Storage.human(freed))" : "没有可清理的缓存"
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("只清理临时文件与 Caches。证书、已签名 IPA 库、导入的 IPA / dylib、配对文件与日志都会保留。")
+        }
     }
 
     private var certDeleteShown: Binding<Bool> {
@@ -59,6 +76,67 @@ struct LibraryView: View {
     }
     private var ipaDeleteShown: Binding<Bool> {
         Binding(get: { pendingDeleteIPA != nil }, set: { if !$0 { pendingDeleteIPA = nil } })
+    }
+
+    // MARK: - 存储与缓存
+
+    private var storageSection: some View {
+        PanelCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Label {
+                    Text("存储与缓存").font(.headline)
+                } icon: {
+                    Image(systemName: "internaldrive.fill").foregroundStyle(Theme.brand)
+                }
+
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("缓存（临时文件）").font(.subheadline.weight(.semibold))
+                        Text("解包 / 注入 / 签名 / 打包过程中的临时目录。清理**不会**影响已导入的 IPA、dylib、证书、签名产物与日志。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Text(Storage.human(cacheBytes))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        confirmCleanCache = true
+                    } label: {
+                        Label("清理缓存", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(cacheBytes == 0)
+
+                    Button {
+                        cacheBytes = Storage.cacheBytes()
+                        cacheTip = "当前缓存 \(Storage.human(cacheBytes))"
+                    } label: {
+                        Label("刷新", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer(minLength: 0)
+                }
+
+                if let cacheTip {
+                    Text(cacheTip)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+
+                Text("日志文件：\(LogStore.shared.fileSizeText) · 首页「日志」卡片上可查看 / 导出 / 清空")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 
     // MARK: - 证书库

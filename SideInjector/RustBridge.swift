@@ -1,8 +1,9 @@
 import Foundation
 
 // 与 Rust core 的 FFI 对应（函数名即 Rust 的 #[no_mangle] 符号）
+/// 日志回调：(消息, 级别)。级别 0 = 重要（界面显示），1 = 细节（只进后台日志文件）。
 @_silgen_name("si_set_log_callback")
-func si_set_log_callback(_ cb: @escaping @convention(c) (UnsafePointer<CChar>) -> Void)
+func si_set_log_callback(_ cb: @escaping @convention(c) (UnsafePointer<CChar>, Int32) -> Void)
 
 @_silgen_name("si_unzip_ipa")
 func si_unzip_ipa(_ ipa: UnsafePointer<CChar>, _ out: UnsafePointer<CChar>) -> Int32
@@ -54,12 +55,17 @@ func si_string_free(_ p: UnsafeMutablePointer<CChar>?)
 
 final class RustBridge {
     static let shared = RustBridge()
-    private var logCb: (@convention(c) (UnsafePointer<CChar>) -> Void)?
+    private var logCb: (@convention(c) (UnsafePointer<CChar>, Int32) -> Void)?
 
     private init() {
-        let cb: @convention(c) (UnsafePointer<CChar>) -> Void = { ptr in
+        let cb: @convention(c) (UnsafePointer<CChar>, Int32) -> Void = { ptr, level in
             if let s = String(validatingUTF8: ptr) {
-                LogStore.shared.append(s)
+                // level 0 = 重要（界面显示）；1 = 细节（只进后台日志文件，界面不显示）。
+                if level == 0 {
+                    LogStore.shared.append(s)
+                } else {
+                    LogStore.shared.appendDetail(s)
+                }
             }
         }
         logCb = cb

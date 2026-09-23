@@ -28,18 +28,29 @@ mod logbridge;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 
-type LogCb = extern "C" fn(*const c_char);
+/// 日志回调：`(消息, 级别)`。级别 0 = 重要（界面显示），1 = 细节（只进后台日志文件）。
+type LogCb = extern "C" fn(*const c_char, c_int);
 static mut LOG_CB: Option<LogCb> = None;
 
-/// 跨模块日志：若有 Swift 注册的回调则转发，否则静默。
-pub(crate) fn log_msg(msg: &str) {
+fn emit(msg: &str, level: c_int) {
     unsafe {
         if let Some(cb) = LOG_CB {
             if let Ok(c) = CString::new(msg) {
-                cb(c.as_ptr());
+                cb(c.as_ptr(), level);
             }
         }
     }
+}
+
+/// **重要日志**：界面上会显示（阶段、汇总、自检、错误）。
+pub(crate) fn log_msg(msg: &str) {
+    emit(msg, 0);
+}
+
+/// **细节日志**：只写进后台日志文件（逐项进度、上游库内部输出、诊断细节），
+/// 界面不显示 —— 否则一次签名上万行会把界面拖垮。
+pub(crate) fn log_detail(msg: &str) {
+    emit(msg, 1);
 }
 
 #[no_mangle]

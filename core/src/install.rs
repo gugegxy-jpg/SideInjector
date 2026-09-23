@@ -90,7 +90,8 @@ async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
     let mut rp_hosts: Vec<Ipv4Addr> = Vec::new();
     for host in probe_hosts() {
         let (ok, note) = probe_endpoint(host, RSD_PORT, false).await;
-        log_msg(&format!("install: 端口探测 {note}"));
+        // 端口探测是逐地址的诊断细节：只进后台日志文件，界面不显示。
+        crate::log_detail(&format!("install: 端口探测 {note}"));
         if ok {
             rp_hosts.push(host);
         }

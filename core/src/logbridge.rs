@@ -10,7 +10,9 @@
 //!   —— https://github.com/indygreg/apple-platform-rs ，许可 MPL-2.0。
 //!   本文件是本项目自有的 `log::Log` 实现（转发到 App 日志），未使用该仓库的代码。
 
-use crate::log_msg;
+// 本文件里转发的一切（apple-codesign / apple-bundles 内部过程、idevice 的 tracing）
+// 都属于「细节日志」：只进后台日志文件，界面不显示 —— 它们逐条打印，量极大。
+use crate::log_detail as log_msg;
 use log::{LevelFilter, Log, Metadata, Record};
 use std::sync::{Mutex, Once};
 

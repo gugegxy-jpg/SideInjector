@@ -63,10 +63,15 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       **路径作用域标识**（`SettingsScope::Path("Frameworks/xxx.framework/xxx")`），浅签时用我们给的值
 - [x] **签名标识自检**：签完自行解析新签名的 `CodeDirectory` 把标识读回来逐项比对，
       收尾在**最终会打进 IPA 的那份 app** 上汇总（`签名标识自检：检查 N 项，不匹配 M 项`，0 才算全对）
-- [x] **日志不再拖卡界面**：Rust 侧过滤 `goblin` / `apple_codesign::code_resources` 的逐条 dump
-      （一轮签名从 2 万余行降到几百行）；Swift 侧日志改为**每 0.2 秒合并提交一次**
-      （原来每行一次跨 FFI + 一次主线程切换 + 一次视图刷新）；日志卡片独立观察 `LogStore`，
-      界面只渲染末尾 200 行（点「复制」拿到的仍是全文）
+- [x] **日志分两级 + 不再拖卡界面**：**重要日志**（阶段、汇总、自检、错误）显示在首页日志卡片；
+      **细节日志**（逐项进度、apple-codesign / goblin / idevice 内部输出、RSD 服务清单等诊断）
+      只写后台日志文件 `Application Support/Logs/sideinjector.log`。Rust 侧过滤 `goblin` /
+      `apple_codesign::code_resources` 的逐条 dump；Swift 侧**每 0.2 秒合并提交一次**、
+      日志卡片独立观察 `LogStore`、界面只渲染末尾 200 行
+- [x] **日志管理**：首页日志卡片可「查看全部」（含细节日志的完整快照）、「导出」（分享 / 存到「文件」）、
+      「清空」（内存 + 文件，超过 4 MB 自动轮转保留一份 `sideinjector.1.log`）
+- [x] **清理 App 缓存**：「库」页签 →「存储与缓存」显示缓存占用并可一键清理
+      （只清 `tmp/` 下的工作目录与 `Caches`；证书、已签名 IPA 库、导入的 IPA / dylib、配对文件、日志都保留）
 - [x] 证书库：多套证书持久化、可编辑、覆盖安装后**路径按当前数据容器自愈**（不会丢）
 - [x] 已签名 IPA 库：签名成功自动入库，点击即可再次安装
 - [x] 导入即入库：IPA / dylib 落到 `Application Support/Inputs/`，不依赖文档选择器给的临时副本

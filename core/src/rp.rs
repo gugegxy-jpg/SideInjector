@@ -137,9 +137,11 @@ pub async fn install(
     // 先把这条隧道到底是什么打出来：RSD 的 uuid / properties / 全部服务名。
     // iOS 上 `create_tcp_listener` 可能给出「受信」或「未受信」两类隧道，
     // 未受信隧道只暴露一小撮服务（通常不含 AFC / installation_proxy）。
+    // 下面这段（properties / 全部服务名 / 逐服务明细）是排查用的诊断细节：
+    // 一次安装上百行，一律只进后台日志文件，界面不显示。
     let mut props: Vec<String> = handshake.properties.keys().cloned().collect();
     props.sort();
-    log_msg(&format!(
+    crate::log_detail(&format!(
         "rp: RSD uuid={}，协议 v{}，properties：{}",
         handshake.uuid,
         handshake.protocol_version,
@@ -147,14 +149,14 @@ pub async fn install(
     ));
     let mut names: Vec<String> = handshake.services.keys().cloned().collect();
     names.sort();
-    log_msg(&format!("rp: RSD 服务共 {} 个：", names.len()));
+    crate::log_detail(&format!("rp: RSD 服务共 {} 个：", names.len()));
     for chunk in names.chunks(6) {
-        log_msg(&format!("rp:   {}", chunk.join("、")));
+        crate::log_detail(&format!("rp:   {}", chunk.join("、")));
     }
     // 逐个打印解析结果（port / entitlement 摘要）：可看出端口是否为 0、条目是否可疑。
     for name in &names {
         if let Some(svc) = handshake.services.get(name) {
-            log_msg(&format!(
+            crate::log_detail(&format!(
                 "rp: 服务明细 {name} port={} remote_xpc={} entitlement={}",
                 svc.port,
                 svc.uses_remote_xpc,

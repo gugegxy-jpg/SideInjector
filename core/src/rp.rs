@@ -1,41 +1,43 @@
 //! 免电脑安装通路（RemotePairing + CDTunnel）—— iOS 17+ / 27 的正统设备端路径。
 //!
 //! 为什么需要它：
-//!   - 设备端自连 RSD 端口（49152）发**明文** HTTP 升级请求会被 RST：那个端口上的
-//!     `remoted` / RP 服务要的是 **TLS-PSK** 加密连接；
+//!   - 设备端自连 RSD 端口发**明文**请求会被 RST：那条链路要 **TLS-PSK** 加密连接；
 //!   - TLS-PSK 的密钥来自 RemotePairing 会话（`RemotePairingClient::encryption_key()`），
-//!     而配对记录可以**在设备上自配对生成**（本 App 的「设备配对」卡片），所以不需要电脑。
+//!     而配对记录可以在**设备上自配对**生成（本 App 的「设备配对」卡片），所以不需要电脑。
 //!
-//! 完整链路：
-//!   1. `RpPairingFile::read_from_file`           读自配对产出的配对记录（不是 lockdownd 那种）
-//!   2. `RemotePairingClient::validate_pairing`   与设备 RP 服务验证（已有记录 → 不需要 PIN）
-//!   3. `client.encryption_key()`                 取 TLS-PSK
-//!   4. `connect_tls_psk_tunnel_native(stream, psk)`  TLS-PSK + CDTunnel → `CdTunnel`，
-//!      其 `info` 给出设备侧 IPv6 与**RSD 端口**（不必猜 49152）
-//!   5. 隧道里只有裸 IPv6 包，用内置的**用户态 TCP 栈**（jktcp）在其上跑 TCP，
-//!      连上 RSD 端口做握手 —— `idevice` 为 `AdapterHandle` 实现了 `RsdProvider`，
-//!      因此可以直接复用 `install_package_with_callback_rsd`（AFC 上传 + installation_proxy）
+//! 完整链路（与 SideInstaller 依赖的 idevice C-FFI `tunnel_create_rppairing` 一致）：
+//!   1. `RpPairingFile::read_from_file`        读自配对产出的配对记录
+//!   2. `RpPairingSocket::new(stream)`         直连 RP 服务（明文 plist + b64 负载，originatedBy=host）
+//!   3. `RemotePairingClient::connect`         RPPairing 握手 + pair-verify（失败则回退 pair-setup，需 PIN）
+//!   4. `create_tcp_listener()`                ★ 让设备为隧道**动态开一个监听端口**
+//!   5. `connect_tls_psk_tunnel_native`        连 `addr:上一步返回的端口`，用 PSK 做 TLS-PSK + CDTunnel
+//!      → `tunnel.info` 给出隧道两端 IPv6 与 **RSD 端口**
+//!   6. 隧道里只有裸 IPv6 包 → 用户态 TCP 栈（jktcp）在其上跑 TCP → 连 RSD 端口做握手
+//!      （`idevice` 为 `AdapterHandle` 实现了 `RsdProvider`，可直接复用安装例程）
+//!   7. `install_package_with_callback_rsd`    AFC 上传 /PublicStaging + installation_proxy 安装
 //!
 //! 代码出处（开源署名）：协议实现全部来自 `idevice` crate
 //!   —— https://github.com/jkcoxson/idevice （MIT，Copyright © Jackson Coxson）。
+//!   `create_tcp_listener` + 动态隧道端口这一步，参照的是该仓库 `ffi/src/tunnel_provider.rs`
+//!   里 `tunnel_create_rppairing` / `finish_tunnel` 的流程（SideInstaller 亦复用同一实现）。
 
 use crate::log_msg;
 use anyhow::{bail, Context, Result};
 use idevice::remote_pairing::tunnel::connect_tls_psk_tunnel_native;
-use idevice::remote_pairing::{RemotePairingClient, RpPairingFile};
+use idevice::remote_pairing::{RemotePairingClient, RpPairingFile, RpPairingSocket};
 use idevice::services::rsd::RsdHandshake;
 use idevice::tcp::adapter::Adapter;
 use idevice::utils::installation::install_package_with_callback_rsd;
-use idevice::RemoteXpcClient;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context as TaskCtx, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 
-/// 设备端 RP / RSD 服务端口（同一个端口：明文连上会被直接拒，必须 TLS-PSK）。
+/// RP 服务端口候选。设备的 RP 服务经 mDNS（`_remotepairing._tcp`）广播、端口随设备而变；
+/// 设备端自连时实测 49152 可连（RP/RSD 相关服务），先用它，连不上再报错。
 pub const RP_PORT: u16 = 49152;
 
 /// 隧道端点信息（从 CDTunnel 握手结果里摘出来的我们需要的部分）。
@@ -51,14 +53,27 @@ pub struct TunnelEndpoint {
     pub rsd_port: u16,
 }
 
-/// 第一步（诊断用）：只用配对记录验证身份并建立 CDTunnel，把端点信息打进日志。
+/// 第一步（诊断用）：配对验证 + 建隧道，把端点信息打进日志。
+#[allow(dead_code)]
 pub async fn probe(pairing_path: &Path, host: Ipv4Addr) -> Result<TunnelEndpoint> {
-    let psk = validate(pairing_path, host).await?;
-    let info = open_tunnel(host, &psk).await?;
-    Ok(info)
+    let mut rpc = connect_rpc(pairing_path, host, RP_PORT).await?;
+    let (tunnel_stream, _tunnel_port) = open_tunnel_stream(&mut rpc, host).await?;
+    let tunnel = connect_tls_psk_tunnel_native(tunnel_stream, rpc.encryption_key())
+        .await
+        .map_err(|e| anyhow::anyhow!("TLS-PSK / CDTunnel 握手失败：{e:?}"))?;
+    let endpoint = endpoint_of(&tunnel.info);
+    log_msg(&format!(
+        "rp: 隧道已建立（{host}）—— 本端 {} / 设备侧 {} / 掩码 {} / MTU {} / RSD 端口 {}",
+        endpoint.client_address,
+        endpoint.server_address,
+        tunnel.info.netmask,
+        endpoint.mtu,
+        endpoint.rsd_port
+    ));
+    Ok(endpoint)
 }
 
-/// 完整安装：验证配对记录 → TLS-PSK 隧道 → 用户态 TCP → RSD 握手 → AFC + installation_proxy。
+/// 完整安装：配对验证 → 设备动态隧道端口 → TLS-PSK 隧道 → 用户态 TCP → RSD → AFC + installation_proxy。
 ///
 /// `on_percent` 用于把 installation_proxy 回传的百分比上报给调用方（Swift 侧靠轮询取）。
 pub async fn install(
@@ -67,40 +82,33 @@ pub async fn install(
     host: Ipv4Addr,
     on_percent: impl Fn(i32),
 ) -> Result<()> {
-    let psk = validate(pairing_path, host).await?;
+    // 1~3) RP 握手 + 配对验证（失败会回退完整 pair-setup，届时需要 PIN）
+    let mut rpc = connect_rpc(pairing_path, host, RP_PORT).await?;
 
-    // TLS-PSK + CDTunnel：隧道只建一次，信息与本体都从这里拿。
-    let stream = TcpStream::connect((host, RP_PORT))
-        .await
-        .with_context(|| format!("连接 RP 服务失败（{host}:{RP_PORT}）"))?;
-    let tunnel = connect_tls_psk_tunnel_native(stream, &psk)
-        .await
-        .map_err(|e| anyhow::anyhow!("TLS-PSK / CDTunnel 握手失败（{host}:{RP_PORT}）：{e:?}"))?;
+    // 4) 让设备为隧道动态开一个监听端口 —— 隧道**不是**建在 RP 服务端口上的
+    let (tunnel_stream, tunnel_port) = open_tunnel_stream(&mut rpc, host).await?;
+    log_msg(&format!("rp: 设备已为隧道开放端口 {tunnel_port}"));
 
-    let client_address = tunnel.info.client_address.clone();
-    let server_address = tunnel.info.server_address.clone();
-    let netmask = tunnel.info.netmask.clone();
-    let mtu = tunnel.info.mtu;
-    let rsd_port = tunnel.info.server_rsd_port;
+    // 5) TLS-PSK + CDTunnel
+    let tunnel = connect_tls_psk_tunnel_native(tunnel_stream, rpc.encryption_key())
+        .await
+        .map_err(|e| anyhow::anyhow!("TLS-PSK / CDTunnel 握手失败（隧道端口 {tunnel_port}）：{e:?}"))?;
+    let endpoint = endpoint_of(&tunnel.info);
     log_msg(&format!(
-        "rp: 隧道已建立（{host}）—— 本端 {client_address} / 设备侧 {server_address} \
-         / 掩码 {netmask} / MTU {mtu} / RSD 端口 {rsd_port}"
+        "rp: 隧道已建立 —— 本端 {} / 设备侧 {} / MTU {} / RSD 端口 {}",
+        endpoint.client_address, endpoint.server_address, endpoint.mtu, endpoint.rsd_port
     ));
-    if rsd_port == 0 {
+    if endpoint.rsd_port == 0 {
         bail!("隧道没有给出 RSD 端口（serverRSDPort=0），无法继续");
     }
 
-    let client_addr = parse_addr(&client_address)?;
-    let server_addr = parse_addr(&server_address)?;
+    // 6) 隧道里是裸 IPv6 包 → 用户态 TCP 栈（设备端拿不到 TUN 权限，只能这么做）
+    let client_addr = parse_addr(&endpoint.client_address)?;
+    let server_addr = parse_addr(&endpoint.server_address)?;
     if client_addr.is_ipv4() != server_addr.is_ipv4() {
         bail!("隧道地址版本不一致：本端 {client_addr} / 设备侧 {server_addr}");
     }
-
-    // 隧道里是裸 IPv6 包，交给用户态 TCP 栈（jktcp）：它自己按 IP 头长度切分报文，
-    // 所以这里直接把字节流交给它即可（设备端拿不到 TUN 权限，只能这么做）。
-    let mtu_usize = mtu as usize;
-    // MSS = MTU - 40(IPv6 头) - 20(TCP 头)
-    let mss = mtu_usize.saturating_sub(60).max(1);
+    let mss = (endpoint.mtu as usize).saturating_sub(60).max(1);
     let mut adapter = Adapter::new(
         Box::new(DebugStream(tunnel.into_inner())),
         client_addr,
@@ -109,15 +117,15 @@ pub async fn install(
     adapter.set_mss(mss);
     let mut handle = adapter.to_async_handle();
     log_msg(&format!(
-        "rp: 用户态 TCP 就绪（本端 {client_addr} → 设备侧 {server_addr}，MSS {mss}），连接 RSD 端口 {rsd_port}…"
+        "rp: 用户态 TCP 就绪（本端 {client_addr} → 设备侧 {server_addr}，MSS {mss}），连接 RSD 端口 {}…",
+        endpoint.rsd_port
     ));
 
-    // 经隧道与设备的 RSD 服务握手（拿服务表），再复用安装例程。
-    let stream = handle
-        .connect(rsd_port)
+    let rsd_stream = handle
+        .connect(endpoint.rsd_port)
         .await
-        .map_err(|e| anyhow::anyhow!("隧道内连接 RSD 端口 {rsd_port} 失败：{e:?}"))?;
-    let mut handshake = RsdHandshake::new(stream)
+        .map_err(|e| anyhow::anyhow!("隧道内连接 RSD 端口 {} 失败：{e:?}", endpoint.rsd_port))?;
+    let mut handshake = RsdHandshake::new(rsd_stream)
         .await
         .context("RSD 握手失败（经 RP 隧道）")?;
     log_msg(&format!(
@@ -129,7 +137,11 @@ pub async fn install(
     for name in ["com.apple.afc", "com.apple.mobile.installation_proxy"] {
         log_msg(&format!(
             "rp: 服务 {name} {}",
-            if handshake.services.contains_key(name) { "✓" } else { "✗ 缺失" }
+            if handshake.services.contains_key(name) {
+                "✓"
+            } else {
+                "✗ 缺失"
+            }
         ));
     }
     if !handshake.services.contains_key("com.apple.afc") {
@@ -142,7 +154,7 @@ pub async fn install(
         bail!("RSD 未提供 com.apple.mobile.installation_proxy：请确认开发者模式已开启");
     }
 
-    // 必须以 Developer 安装，否则 installd 不读内嵌描述文件，会在校验阶段拒绝。
+    // 7) 必须以 Developer 安装，否则 installd 不读内嵌描述文件，会在校验阶段拒绝。
     let mut opts = plist::Dictionary::new();
     opts.insert(
         "PackageType".to_string(),
@@ -169,9 +181,57 @@ pub async fn install(
 
 // MARK: - 内部步骤
 
-/// 用配对记录向设备 RP 服务验证身份，返回 TLS-PSK 密钥。
-async fn validate(pairing_path: &Path, host: Ipv4Addr) -> Result<Vec<u8>> {
-    let mut pairing = RpPairingFile::read_from_file(pairing_path).await.map_err(|e| {
+/// 已建立的 RP 客户端（host 角色，直连原始 TCP）。
+type Rpc = RemotePairingClient<RpPairingSocket<TcpStream>>;
+
+/// 连上设备的 RP 服务：RPPairing 握手 + 配对验证（验证失败会自动回退完整 pair-setup）。
+async fn connect_rpc(pairing_path: &Path, host: Ipv4Addr, port: u16) -> Result<Rpc> {
+    let mut pairing = load_pairing(pairing_path).await?;
+    let stream = TcpStream::connect((host, port))
+        .await
+        .with_context(|| format!("连接 RP 服务失败（{host}:{port}）"))?;
+
+    // 直连 RP 服务必须用 `RpPairingSocket`（明文 plist + b64 负载、originatedBy="host"）；
+    // `RemoteXpcClient` 是「经 RemoteXPC 通道访问 RP」用的（raw bytes），
+    // 用它直连原始 TCP 会被设备当成非法帧直接 RST（实测 code 54）。
+    let mut rpc = RemotePairingClient::new(RpPairingSocket::new(stream), "SideInjector");
+
+    // 若设备要求确认（pair-setup 回退），PIN 由我们这侧给出、在设备上输入；
+    // 正常情况下已有配对记录，pair-verify 直接通过，用不到 PIN。
+    let pin = pseudo_pin();
+    log_msg(&format!(
+        "rp: 开始配对验证（若设备提示输入 PIN，请输入 {pin}）"
+    ));
+    rpc.connect(&mut pairing, || {
+        let p = pin.clone();
+        async move { p }
+    })
+    .await
+    .map_err(|e| {
+        anyhow::anyhow!("RPPairing 握手 / 配对验证失败（{host}:{port}）：{e:?}")
+    })?;
+    log_msg("rp: 配对验证通过");
+    Ok(rpc)
+}
+
+/// 让设备为隧道开放端口，并连上它（TLS-PSK 之前的裸 TCP 流）。
+async fn open_tunnel_stream(rpc: &mut Rpc, host: Ipv4Addr) -> Result<(TcpStream, u16)> {
+    let port = rpc
+        .create_tcp_listener()
+        .await
+        .map_err(|e| anyhow::anyhow!("请求设备创建隧道监听端口失败：{e:?}"))?;
+    if port == 0 {
+        bail!("设备返回的隧道端口为 0");
+    }
+    let stream = TcpStream::connect(SocketAddr::from((host, port)))
+        .await
+        .with_context(|| format!("连接隧道端口失败（{host}:{port}）"))?;
+    Ok((stream, port))
+}
+
+/// 读取 RemotePairing 配对记录。
+async fn load_pairing(pairing_path: &Path) -> Result<RpPairingFile> {
+    let pairing = RpPairingFile::read_from_file(pairing_path).await.map_err(|e| {
         anyhow::anyhow!(
             "读取 RemotePairing 配对文件失败（{}）：{e:?}\n\
              该通路需要「设备配对」卡片自配对产出的配对记录，\
@@ -180,46 +240,17 @@ async fn validate(pairing_path: &Path, host: Ipv4Addr) -> Result<Vec<u8>> {
         )
     })?;
     log_msg("rp: 已加载 RemotePairing 配对文件");
-
-    let stream = TcpStream::connect((host, RP_PORT))
-        .await
-        .with_context(|| format!("连接 RP 服务失败（{host}:{RP_PORT}）"))?;
-    let xpc = RemoteXpcClient::new(stream)
-        .await
-        .map_err(|e| anyhow::anyhow!("创建 RP 客户端失败：{e:?}"))?;
-    let mut client = RemotePairingClient::new(xpc, "SideInjector");
-    client
-        .validate_pairing(&mut pairing)
-        .await
-        .map_err(|e| anyhow::anyhow!("配对记录验证失败（{host}:{RP_PORT}）：{e:?}"))?;
-    log_msg("rp: 配对记录验证通过");
-    Ok(client.encryption_key().to_vec())
+    Ok(pairing)
 }
 
-/// TLS-PSK + CDTunnel 握手，返回隧道端点信息。
-async fn open_tunnel(host: Ipv4Addr, psk: &[u8]) -> Result<TunnelEndpoint> {
-    let stream = TcpStream::connect((host, RP_PORT))
-        .await
-        .with_context(|| format!("连接 RP 服务失败（{host}:{RP_PORT}）"))?;
-    let tunnel = connect_tls_psk_tunnel_native(stream, psk)
-        .await
-        .map_err(|e| anyhow::anyhow!("TLS-PSK / CDTunnel 握手失败（{host}:{RP_PORT}）：{e:?}"))?;
-    let info = &tunnel.info;
-    let endpoint = TunnelEndpoint {
+/// 从隧道信息里取我们要的字段（避免在代码里写出其类型名）。
+fn endpoint_of(info: &idevice::tunnel::TunnelInfo) -> TunnelEndpoint {
+    TunnelEndpoint {
         client_address: info.client_address.clone(),
         server_address: info.server_address.clone(),
         mtu: info.mtu,
         rsd_port: info.server_rsd_port,
-    };
-    log_msg(&format!(
-        "rp: 隧道已建立（{host}）—— 本端 {} / 设备侧 {} / 掩码 {} / MTU {} / RSD 端口 {}",
-        endpoint.client_address,
-        endpoint.server_address,
-        info.netmask,
-        endpoint.mtu,
-        endpoint.rsd_port
-    ));
-    Ok(endpoint)
+    }
 }
 
 /// 隧道返回的地址可能带 `/128` 之类后缀，这里只取地址部分。
@@ -228,6 +259,15 @@ fn parse_addr(s: &str) -> Result<IpAddr> {
     cleaned
         .parse::<IpAddr>()
         .map_err(|e| anyhow::anyhow!("隧道地址解析失败（{s}）：{e}"))
+}
+
+/// 6 位 PIN（时间派生，仅用于 pair-setup 回退时的设备端确认，不涉及密钥）。
+fn pseudo_pin() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    format!("{:06}", (nanos as u32) % 1_000_000)
 }
 
 // MARK: - 传输包装

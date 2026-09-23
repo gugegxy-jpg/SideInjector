@@ -82,32 +82,34 @@ pub fn install_ipa(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
 }
 
 async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
-    // 通路 0（免电脑，优先尝试）：RemotePairing 隧道。
+    // 通路 0（免电脑，优先）：RemotePairing 隧道 → 用户态 TCP → RSD → AFC + installation_proxy。
     //
     // 设备端自连 RSD 端口（49152）**要 TLS-PSK**，密钥来自 RemotePairing 会话；
-    // 而配对记录可以在设备上自配对生成（本 App「设备配对」），所以这条路不需要电脑。
-    // 本版先做「验证 + 建隧道」并打印隧道端点，随后的 RSD 安装将改为经该隧道进行。
+    // 配对记录可以在设备上自配对生成（本 App「设备配对」），所以这条路不需要电脑。
+    // 先用带超时的 TCP 探测筛掉不可达地址，避免对它们做长时间连接等待。
+    let mut rp_hosts: Vec<Ipv4Addr> = Vec::new();
+    for host in probe_hosts() {
+        let (ok, note) = probe_endpoint(host, RSD_PORT, false).await;
+        log_msg(&format!("install: 端口探测 {note}"));
+        if ok {
+            rp_hosts.push(host);
+        }
+    }
     if let Some(pairing) = pairing {
-        for host in probe_hosts() {
-            let attempt = tokio::time::timeout(
-                std::time::Duration::from_secs(8),
-                crate::rp::probe(pairing, host),
-            )
-            .await;
-            match attempt {
-                Ok(Ok(ep)) => {
-                    log_msg(&format!(
-                        "install: RP 隧道可用（{host}）—— 设备侧 {}，RSD 端口 {}",
-                        ep.server_address, ep.rsd_port
-                    ));
-                    break;
+        for host in rp_hosts.iter().copied() {
+            log_msg(&format!(
+                "install: 尝试免电脑通路（RP 隧道 + 用户态 TCP，{host}）"
+            ));
+            match crate::rp::install(ipa, pairing, host, report_percent).await {
+                Ok(()) => {
+                    log_msg("install: 免电脑通路安装成功");
+                    return Ok(());
                 }
-                Ok(Err(e)) => log_msg(&format!("install: RP 隧道尝试失败（{host}）：{e:#}")),
-                Err(_) => log_msg(&format!("install: RP 隧道尝试超时（{host}，8s）")),
+                Err(e) => log_msg(&format!("install: 免电脑通路失败（{host}）：{e:#}")),
             }
         }
     } else {
-        log_msg("install: 未提供配对文件，跳过 RP 隧道通路（该通路需要自配对记录）");
+        log_msg("install: 未提供配对文件，跳过免电脑通路（RP 隧道需要自配对记录）");
     }
 
     // 先探测再动手。原因（实测）：

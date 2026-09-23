@@ -29,6 +29,7 @@ pub fn sign_bundle(
     if !app.exists() {
         anyhow::bail!("待签名的 .app 不存在：{}", app.display());
     }
+    diagnose_bundle(app);
 
     let p12_data = fs::read(p12).with_context(|| format!("读取 P12 证书失败：{p12}"))?;
     let prov_data = fs::read(prov).with_context(|| format!("读取描述文件失败：{prov}"))?;
@@ -52,6 +53,90 @@ pub fn sign_bundle(
 
     log_msg("apple-codesign 库签名完成");
     Ok(())
+}
+
+/// 签名前诊断：apple-codesign 内部错误不带路径，这里主动把线索打出来，
+/// 便于定位到底哪个文件缺失（尤其是断链的符号链接 / 主可执行 / Info.plist 位置）。
+fn diagnose_bundle(app: &Path) {
+    let root_plist = app.join("Info.plist");
+    let contents_plist = app.join("Contents").join("Info.plist");
+    log_msg(&format!(
+        "bundle 诊断：根 Info.plist 存在={} / Contents/Info.plist 存在={}",
+        root_plist.exists(),
+        contents_plist.exists()
+    ));
+
+    let plist_path = if root_plist.exists() {
+        root_plist
+    } else {
+        contents_plist
+    };
+    match fs::read(&plist_path)
+        .ok()
+        .and_then(|b| plist::from_bytes::<plist::Value>(&b).ok())
+    {
+        Some(v) => {
+            let exe = v
+                .as_dictionary()
+                .and_then(|d| d.get("CFBundleExecutable"))
+                .and_then(|x| x.as_string())
+                .unwrap_or("");
+            if exe.is_empty() {
+                log_msg("bundle 诊断：Info.plist 无 CFBundleExecutable");
+            } else {
+                let exe_path = app.join(exe);
+                log_msg(&format!(
+                    "bundle 诊断：CFBundleExecutable={exe} 存在={}",
+                    exe_path.exists()
+                ));
+            }
+        }
+        None => log_msg(&format!(
+            "bundle 诊断：无法解析 Info.plist：{}",
+            plist_path.display()
+        )),
+    }
+
+    let mut files = 0usize;
+    let mut links = 0usize;
+    let mut broken: Vec<String> = Vec::new();
+    walk_bundle(app, &mut files, &mut links, &mut broken);
+    log_msg(&format!(
+        "bundle 诊断：文件 {files}，符号链接 {links}，断链 {}",
+        broken.len()
+    ));
+    for b in broken.iter().take(50) {
+        log_msg(&format!("bundle 诊断：断链 {b}"));
+    }
+}
+
+fn walk_bundle(dir: &Path, files: &mut usize, links: &mut usize, broken: &mut Vec<String>) {
+    let rd = match fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        let md = match fs::symlink_metadata(&p) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let ft = md.file_type();
+        if ft.is_symlink() {
+            *links += 1;
+            // 跟随链接看目标是否真的存在；不存在即断链（apple-codesign 会 ENOENT）。
+            if fs::metadata(&p).is_err() {
+                let t = fs::read_link(&p)
+                    .map(|x| x.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                broken.push(format!("{} -> {}", p.display(), t));
+            }
+        } else if ft.is_dir() {
+            walk_bundle(&p, files, links, broken);
+        } else {
+            *files += 1;
+        }
+    }
 }
 
 /// 从 .mobileprovision（CMS/DER 包裹的 XML plist）提取 Entitlements 字典，

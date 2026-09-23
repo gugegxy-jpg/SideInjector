@@ -108,7 +108,9 @@ final class PairingController: ObservableObject {
                     } else if ns.domain == "NWErrorDomain" && ns.code == 1 {
                         self?.status = "本地网络权限被拒绝：请到 设置 → SideInjector → 本地网络 打开，再重试配对"
                     } else {
-                        self?.status = "本地网络请求失败（请确认已连接 Wi-Fi）：\(error.localizedDescription)"
+                        // 其它错误（如 -65569 DefunctConnection）多为 mDNS 探测的瞬时错误，
+                        // 探测本身只为触发授权，不影响真实配对流程：只记日志，不覆盖配对状态。
+                        LogStore.shared.append("本地网络探测失败（仅用于触发授权，已忽略）：\(error.localizedDescription)")
                     }
                 }
             }

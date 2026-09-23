@@ -1,5 +1,6 @@
 //! IPA 解包 / 打包（zip）。
 
+use crate::log_msg;
 use anyhow::{Context, Result};
 use std::fs;
 use std::io::{Read, Write};
@@ -15,11 +16,24 @@ pub fn unzip(ipa: &Path, out: &Path) -> Result<()> {
     fs::create_dir_all(out).with_context(|| format!("创建输出目录失败：{}", out.display()))?;
     let file = fs::File::open(ipa).with_context(|| format!("打开 IPA 失败：{}", ipa.display()))?;
     let mut archive = ZipArchive::new(file).context("解析 IPA（zip）失败")?;
-    for i in 0..archive.len() {
+
+    let total = archive.len();
+    let mut n_files = 0usize;
+    let mut n_dirs = 0usize;
+    let mut n_links = 0usize;
+    let mut n_skipped = 0usize;
+
+    for i in 0..total {
         let mut zf = archive.by_index(i)?;
         let name = match zf.enclosed_name() {
             Some(n) => n.to_path_buf(),
-            None => continue,
+            None => {
+                n_skipped += 1;
+                if n_skipped <= 20 {
+                    log_msg(&format!("unzip: 跳过不安全条目：{}", zf.name()));
+                }
+                continue;
+            }
         };
         let dest = out.join(&name);
         let unix_mode = zf.unix_mode();
@@ -27,11 +41,11 @@ pub fn unzip(ipa: &Path, out: &Path) -> Result<()> {
 
         if zf.is_dir() {
             fs::create_dir_all(&dest)?;
+            n_dirs += 1;
         } else if is_link {
             // 关键：zip 里的符号链接内容是「链接目标路径字符串」，必须还原成真正的 symlink。
             // 否则 `X.framework/Versions/Current` / `X.framework/X` 之类会变成普通文本文件，
-            // apple-codesign 遍历 bundle 时会走到不存在的真实文件，报 ENOENT (os error 2)，
-            // 表现为「sign error: I/O error: no such file or directory」。
+            // apple-codesign 遍历 bundle 时会走到不存在的真实文件，报 ENOENT (os error 2)。
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -45,6 +59,7 @@ pub fn unzip(ipa: &Path, out: &Path) -> Result<()> {
                 std::os::unix::fs::symlink(&target, &dest)
                     .with_context(|| format!("创建符号链接失败：{} -> {target}", dest.display()))?;
             }
+            n_links += 1;
         } else {
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
@@ -59,8 +74,13 @@ pub fn unzip(ipa: &Path, out: &Path) -> Result<()> {
                     fs::set_permissions(&dest, fs::Permissions::from_mode(m))?;
                 }
             }
+            n_files += 1;
         }
     }
+
+    log_msg(&format!(
+        "unzip: 条目 {total}，文件 {n_files}，目录 {n_dirs}，符号链接 {n_links}，跳过 {n_skipped}"
+    ));
     Ok(())
 }
 

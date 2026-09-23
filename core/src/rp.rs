@@ -151,6 +151,21 @@ pub async fn install(
     for chunk in names.chunks(6) {
         log_msg(&format!("rp:   {}", chunk.join("、")));
     }
+    // 逐个打印解析结果（port / entitlement 摘要）：可看出端口是否为 0、条目是否可疑。
+    for name in &names {
+        if let Some(svc) = handshake.services.get(name) {
+            log_msg(&format!(
+                "rp: 服务明细 {name} port={} remote_xpc={} entitlement={}",
+                svc.port,
+                svc.uses_remote_xpc,
+                if svc.entitlement.is_empty() {
+                    "(空)"
+                } else {
+                    svc.entitlement.as_str()
+                }
+            ));
+        }
+    }
     let tunnel_svcs: Vec<&str> = names
         .iter()
         .map(|s| s.as_str())

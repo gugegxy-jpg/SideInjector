@@ -13,6 +13,10 @@ zip = "2"
 # 打开 apple-codesign / apple-bundles 的内部日志（它们的 IO 错误不带路径，
 # 只有日志才能看出失败发生在哪个 bundle / 哪个文件）。
 log = "0.4"
+# idevice 内部日志走 `tracing`（不是 log）：不桥接就看不到它的 warn
+# （例如 RsdHandshake 解析服务表时「缺 Entitlement / Port 非字符串」会 warn + 跳过该服务）。
+tracing = "0.1"
+tracing-subscriber = "0.3"
 # 进程内库签名：iOS 禁止 App fork/exec 子进程（spawn 会报 operation not permitted），
 # 不能把 rcodesign 当外部二进制调用，因此直接链接 apple-codesign。
 # default-features=false 关掉 notarize，避免 aws-sdk-s3/app-store-connect 等重依赖拖累 iOS 交叉编译。

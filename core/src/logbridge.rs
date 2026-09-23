@@ -52,10 +52,51 @@ impl Log for Bridge {
 static BRIDGE: Bridge = Bridge;
 static INIT: Once = Once::new();
 
+/// 把 idevice 内部的 `tracing` 事件写进 App 日志。
+///
+/// 为什么必须接：idevice 用的是 `tracing`，而上面的桥只接了 `log`。
+/// 例如 `RsdHandshake` 解析服务表时，对「缺 Entitlement」或「Port 不是字符串」的服务
+/// 是 `warn!` + **跳过该服务** —— 不接 tracing 就完全看不到「服务被丢弃」这件事。
+struct TracingWriter;
+
+impl std::io::Write for TracingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        let trimmed = text.trim_end();
+        if !trimmed.is_empty() {
+            for line in trimmed.lines() {
+                log_msg(&format!("[tracing] {line}"));
+            }
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct TracingMakeWriter;
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for TracingMakeWriter {
+    type Writer = TracingWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        TracingWriter
+    }
+}
+
 /// 幂等初始化全局日志器（多次调用只生效一次）。
 pub fn init() {
     INIT.call_once(|| {
         let _ = log::set_logger(&BRIDGE);
         log::set_max_level(LevelFilter::Debug);
+        // tracing：只放行 INFO/WARN/ERROR（Debug/Trace 量太大，会把 App 日志冲爆）。
+        let _ = tracing_subscriber::fmt()
+            .with_writer(TracingMakeWriter)
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .without_time()
+            .try_init();
     });
 }

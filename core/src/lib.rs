@@ -181,6 +181,8 @@ pub extern "C" fn si_install_ipa(ipa: *const c_char, pairing: *const c_char) -> 
         log_msg("si_install_ipa: null path");
         return -1;
     };
+    // 打开库内部日志（log + tracing）——安装链路里要看 idevice 的告警。
+    logbridge::init();
     // 配对文件可选：经典通路（lockdownd + 配对记录）需要它，RSD 通路不需要。
     let pairing = to_str(pairing);
     match install::install_ipa(

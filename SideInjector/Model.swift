@@ -22,7 +22,8 @@ enum RunOutcome: Equatable {
 /// - 进度是**真实**的：只有安装真正成功才到 100%，失败/暂停绝不会显示「已完成」。
 /// - 「设备配对」是流程中的一个阶段，且**只需一次**：已配对会自动跳过。
 /// - 任一步失败即**暂停并保留现场**，用户可点「继续」从该步续跑，也可点「取消」放弃。
-/// - 启动前的校验/准备若失败，会通过 `inputError` 弹窗明确告知（不再「点了没反应」）。
+/// - 点「执行」立刻给出「准备文件…」反馈；复制大文件在后台线程进行，
+///   不会卡住主线程（否则会出现「点了没反应」）。
 final class Model: ObservableObject {
     static let shared = Model()
 
@@ -70,6 +71,18 @@ final class Model: ObservableObject {
     /// 界面展示的阶段：库里直接安装时只有一步。
     var displayStages: [String] { mode == .installOnly ? ["安装到设备"] : stages }
     private var stepCount: Int { mode == .installOnly ? 1 : stages.count }
+
+    // MARK: - 输入快照（在主线程抓取，供后台准备使用）
+    private struct InputSnapshot {
+        let ipa: URL
+        let dylibs: [URL]
+        let p12: URL?
+        let prov: URL?
+        let pairing: URL?
+        let bundleId: String
+        let displayName: String
+        let certPass: String
+    }
 
     // MARK: - 流程上下文（用于暂停后从失败处续跑 / 取消后清理）
     private struct FlowContext {
@@ -120,7 +133,7 @@ final class Model: ObservableObject {
     func run() {
         guard !busy else { return }
 
-        // 1) 先校验，失败立刻弹窗（此时不动日志，方便看到上次的现场）。
+        // 1) 校验（失败立刻弹窗；此时不动日志，方便看到上次现场）
         guard let ipa else { return failInput("请先选择 IPA 文件") }
         guard certP12 != nil else {
             return failInput("还没有选择证书：请到「库」页签添加证书，再在首页下拉中选择")
@@ -129,31 +142,46 @@ final class Model: ObservableObject {
             return failInput("所选证书缺少描述文件（mobileprovision），请到「库」页签编辑该证书并重新选择")
         }
 
-        // 2) 准备（把文件复制进沙盒）。失败也弹窗，并给出是哪个文件出了问题。
-        guard let ctx = buildContext(ipa: ipa) else { return }
-
-        // 3) 真正要跑了，才清空上一次的日志。
+        // 2) 立刻给出可见反馈：准备阶段要把 IPA/证书复制进沙盒，大 IPA 会耗时。
+        let snap = InputSnapshot(ipa: ipa, dylibs: dylibs,
+                                 p12: certP12, prov: profile, pairing: pairingFile,
+                                 bundleId: bundleId, displayName: displayName, certPass: certPass)
         LogStore.shared.clear()
         shareItem = nil
         stageIndex = -1
         progress = 0
         pauseReason = nil
-        outcome = .idle
+        inputError = nil
         mode = .full
         installOnlyURL = nil
-
-        self.ctx = ctx
-        resumeStep = 0
         outcome = .running
-        status = "开始处理…"
-        runFlow(from: 0, ctx: ctx)
+        status = "准备文件（复制到沙盒）…"
+        LogStore.shared.append("准备文件：\(ipa.lastPathComponent)")
+
+        // 3) 在后台线程做复制，避免卡住主线程（这就是之前「点了没反应」的原因）。
+        flowTask = Task.detached { [weak self] in
+            guard let self else { return }
+            guard let ctx = self.buildContext(snap) else { return }   // 失败时已 failInput
+            DispatchQueue.main.async {
+                guard self.outcome != .idle else { return }
+                self.ctx = ctx
+                self.resumeStep = 0
+                self.status = "开始处理…"
+                self.runFlow(from: 0, ctx: ctx)
+            }
+        }
     }
 
-    /// 启动前失败：记录日志并弹窗。
+    /// 启动前失败：回到空闲并弹窗提示（可从任意线程调用）。
     private func failInput(_ msg: String) {
-        status = msg
-        inputError = msg
-        LogStore.shared.append("无法开始：\(msg)")
+        DispatchQueue.main.async {
+            self.outcome = .idle
+            self.stageIndex = -1
+            self.progress = 0
+            self.status = msg
+            self.inputError = msg
+            LogStore.shared.append("无法开始：\(msg)")
+        }
     }
 
     /// 「库」里点击一条已签名 IPA → 直接安装（只跑安装阶段）。
@@ -229,12 +257,17 @@ final class Model: ObservableObject {
         }
     }
 
-    // MARK: - 上下文构建（把用户选的文件复制进沙盒，规避安全作用域）
+    // MARK: - 上下文构建（把用户选的文件复制进沙盒；在后台线程执行）
 
-    private func buildContext(ipa: URL) -> FlowContext? {
+    private func buildContext(_ snap: InputSnapshot) -> FlowContext? {
         let fm = FileManager.default
         let workDir = fm.temporaryDirectory.appendingPathComponent("si_in_\(UUID().uuidString)")
-        try? fm.createDirectory(at: workDir, withIntermediateDirectories: true)
+        do {
+            try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
+        } catch {
+            failInput("无法创建临时目录：\(error.localizedDescription)")
+            return nil
+        }
 
         func copyIn(_ url: URL?, _ name: String) -> URL? {
             guard let url else { return nil }
@@ -246,25 +279,24 @@ final class Model: ObservableObject {
             return fm.fileExists(atPath: dst.path) ? dst : nil
         }
 
-        guard let ipaCopy = copyIn(ipa, "in.ipa") else {
-            failInput("无法读取 IPA 文件「\(ipa.lastPathComponent)」：该文件可能已被系统清理或无权访问，请重新选择 IPA")
+        guard let ipaCopy = copyIn(snap.ipa, "in.ipa") else {
+            failInput("无法读取 IPA 文件「\(snap.ipa.lastPathComponent)」：文件可能已被系统清理或无权访问，请重新选择 IPA")
             return nil
         }
-
-        guard let p12Copy = copyIn(certP12, "cert.p12") else {
+        guard let p12Copy = copyIn(snap.p12, "cert.p12") else {
             failInput("无法读取证书里的 P12 文件：请到「库」页签编辑该证书并重新选择 P12")
             return nil
         }
-        guard let provCopy = copyIn(profile, "profile.mobileprovision") else {
+        guard let provCopy = copyIn(snap.prov, "profile.mobileprovision") else {
             failInput("无法读取证书里的描述文件（mobileprovision）：请到「库」页签编辑该证书并重新选择")
             return nil
         }
+        let pairingCopy = copyIn(snap.pairing, "pairing.plist")
 
         // 多个 dylib：逐个复制进沙盒，注入名默认取文件名（去重、补 .dylib 后缀）。
-        let pairingCopy = copyIn(pairingFile, "pairing.plist")
         var copiedDylibs: [(url: URL, name: String)] = []
         var usedNames = Set<String>()
-        for (idx, src) in dylibs.enumerated() {
+        for (idx, src) in snap.dylibs.enumerated() {
             let base = Self.dylibInjectionName(from: src.lastPathComponent, fallbackIndex: idx)
             let name = Self.uniqueName(base, used: &usedNames)
             if let dst = copyIn(src, "dylib_\(idx)_\(name)") {
@@ -277,11 +309,11 @@ final class Model: ObservableObject {
         let tmp = fm.temporaryDirectory.appendingPathComponent("si_out_\(UUID().uuidString)")
         let outIpa = fm.temporaryDirectory.appendingPathComponent("signed_\(UUID().uuidString).ipa")
 
-        return FlowContext(ipaCopy: ipaCopy, ipaName: ipa.lastPathComponent,
+        return FlowContext(ipaCopy: ipaCopy, ipaName: snap.ipa.lastPathComponent,
                            dylibs: copiedDylibs, p12Copy: p12Copy,
                            provCopy: provCopy, pairingCopy: pairingCopy, tmp: tmp, outIpa: outIpa,
-                           bundleId: bundleId, displayName: displayName,
-                           certPass: certPass)
+                           bundleId: snap.bundleId, displayName: snap.displayName,
+                           certPass: snap.certPass)
     }
 
     /// 由源文件名推断注入名（补 .dylib 后缀；空则用序号兜底）。

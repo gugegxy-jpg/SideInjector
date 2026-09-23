@@ -19,20 +19,24 @@ struct ContentView: View {
     @State private var envBusy = false
 
     var body: some View {
-        // 背景作为「兄弟层」铺满全屏（含安全区）；页签内容用系统 TabView。
+        // 背景作为「兄弟层」铺满全屏（含安全区）。
         //
-        // 为什么不再自绘底部 dock：自绘时它必须放在内容区的 VStack 里，于是它下方露出的是
-        // OLED 黑底，看起来就是「一块矩形深色底板 + 一层胶囊玻璃」，而且拿不到系统的
-        // 浮动 / 收起行为；换成系统 TabView 后，iOS 26+ 会由系统渲染成**浮动 Liquid Glass**
-        // 页签栏（并在向下滚动时自动收起），内容还能从它下面穿过。
+        // 底部 dock 为什么不再自绘：自绘时它必须放在内容区的 VStack 里，下方露出的是
+        // OLED 黑底，看起来就是「矩形深色底板 + 一层胶囊玻璃」，而且拿不到系统的浮动 /
+        // 收起行为。iOS 18+ 改用系统 `TabView`：iOS 26+ 会由系统渲染成**浮动 Liquid Glass**
+        // 页签栏（向下滚动还会收起），内容能从它下面穿过。
+        //
+        // 注意 `Tab` / `TabView(selection:content:)` 是 **iOS 18+** API，
+        // 而本工程部署目标是 iOS 17.0 —— 所以必须走 `#available` 分支，
+        // iOS 17 保留自绘 dock 作为退让（`legacyTabLayout`）。
         ZStack {
             AppBackground()
                 .ignoresSafeArea()
-            TabView(selection: $tab) {
-                Tab("主页", systemImage: "house.fill", value: 0) { homeTab }
-                Tab("库", systemImage: "books.vertical.fill", value: 1) { LibraryView() }
+            if #available(iOS 18.0, *) {
+                systemTabView
+            } else {
+                legacyTabLayout
             }
-            .siFloatingTabBar()
         }
         .navigationBarHidden(true)
         .preferredColorScheme(.dark)
@@ -99,8 +103,57 @@ struct ContentView: View {
         .scrollIndicators(.hidden)   // 不显示右侧滚动条
     }
 
-    // 底部页签栏：已改用系统 `TabView`（见 body 里的说明与 `siFloatingTabBar()`），
-    // 自绘 dock（矩形底板 + 胶囊玻璃）已删除。
+    // MARK: - 底部页签栏
+
+    /// iOS 18+：系统页签栏。
+    /// iOS 26+ 下系统会自动渲染成**浮动 Liquid Glass**（并在向下滚动时收起，见 `siFloatingTabBar()`），
+    /// 内容从它下面穿过 —— 不会再出现「深色底板 + 胶囊玻璃」那种观感。
+    @available(iOS 18.0, *)
+    private var systemTabView: some View {
+        TabView(selection: $tab) {
+            Tab("主页", systemImage: "house.fill", value: 0) { homeTab }
+            Tab("库", systemImage: "books.vertical.fill", value: 1) { LibraryView() }
+        }
+        .siFloatingTabBar()
+    }
+
+    /// iOS 17（本工程最低版本）没有 `Tab` API，沿用自绘 dock 退让。
+    private var legacyTabLayout: some View {
+        VStack(spacing: 0) {
+            Group {
+                if tab == 0 { homeTab } else { LibraryView() }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            legacyTabBar
+        }
+    }
+
+    private var legacyTabBar: some View {
+        HStack(spacing: 0) {
+            legacyTabButton(0, "主页", "house.fill")
+            legacyTabButton(1, "库", "books.vertical.fill")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
+        .siGlassBar()
+        .padding(.horizontal, 16)
+        .padding(.bottom, 6)
+    }
+
+    private func legacyTabButton(_ idx: Int, _ title: String, _ icon: String) -> some View {
+        Button {
+            withAnimation(.snappy(duration: 0.22)) { tab = idx }
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 18, weight: .semibold))
+                Text(title).font(.caption2.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(tab == idx ? Theme.accent : Color.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 
     // MARK: - 头部
 

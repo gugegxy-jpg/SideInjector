@@ -40,6 +40,8 @@ final class Model: ObservableObject {
 
     // MARK: - 输入
     @Published var ipa: URL?
+    /// 已导入到持久目录的 IPA 列表：首页可像选证书一样直接下拉选择，无需每次重选文件。
+    @Published var savedIPAs: [URL] = []
     /// 可一次选择多个 dylib，逐个注入（注入名默认取各自文件名）。
     @Published var dylibs: [URL] = []
     @Published var bundleId: String = ""
@@ -214,14 +216,25 @@ final class Model: ObservableObject {
         let a = url.startAccessingSecurityScopedResource()
         defer { if a { url.stopAccessingSecurityScopedResource() } }
         if (try? fm.copyItem(at: url, to: dst)) != nil {
-            if let old = ipa, Self.isOwnedInput(old) { try? fm.removeItem(at: old) }
+            // 不再删除上一次导入的 IPA：导入即入库，之后可在下拉里反复选用。
             ipa = dst
-            LogStore.shared.append("已导入 IPA：\(url.lastPathComponent)")
+            LogStore.shared.append("已导入 IPA（可在下拉中重复选择）：\(url.lastPathComponent)")
+            refreshSavedIPAs()
         } else {
             ipa = url
             LogStore.shared.append("IPA 导入持久目录失败，暂用原路径：\(url.lastPathComponent)")
         }
         inputError = nil
+    }
+
+    /// 重新扫描持久目录，刷新「已导入 IPA」下拉列表。
+    func refreshSavedIPAs() {
+        let dir = Self.persistentInputDir()
+        let urls = (try? FileManager.default.contentsOfDirectory(at: dir,
+                                                                includingPropertiesForKeys: nil)) ?? []
+        savedIPAs = urls
+            .filter { $0.pathExtension.lowercased() == "ipa" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     /// 选择 dylib 后立刻落盘到持久目录（可多选）。

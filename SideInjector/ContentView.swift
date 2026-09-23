@@ -163,21 +163,37 @@ struct ContentView: View {
         PanelCard {
             VStack(alignment: .leading, spacing: 12) {
                 sectionTitle("输入", systemImage: "doc.badge.plus")
-                Button {
-                    let picker = DocumentPicker(types: [UTType(filenameExtension: "ipa") ?? .data, .data]) { urls in
-                        model.importIPA(urls.first)
-                    }
-                    topRootVC()?.present(picker, animated: true)
-                } label: {
-                    HStack {
-                        Text("IPA 文件").foregroundStyle(.primary)
-                        Spacer()
-                        Text(model.ipa.map { Model.displayName(for: $0) } ?? "未选择")
+                // IPA 改为「导入一次即入库，之后像选证书一样下拉选择」。
+                HStack(spacing: 10) {
+                    Text("IPA 文件").foregroundStyle(.primary)
+                    Spacer(minLength: 8)
+                    if model.savedIPAs.isEmpty {
+                        Text("未选择（请先导入）")
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                    } else {
+                        Picker("", selection: $model.ipa) {
+                            Text("请选择").tag(URL?.none)
+                            ForEach(model.savedIPAs, id: \.self) { u in
+                                Text(Model.displayName(for: u)).tag(Optional(u))
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .lineLimit(1)
                     }
+                    Button {
+                        let picker = DocumentPicker(types: [UTType(filenameExtension: "ipa") ?? .data, .data]) { urls in
+                            model.importIPA(urls.first)
+                        }
+                        topRootVC()?.present(picker, animated: true)
+                    } label: {
+                        Label("导入", systemImage: "plus.circle")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.plain)
+                .onAppear { model.refreshSavedIPAs() }
                 Divider()
                 Button {
                     let picker = DocumentPicker(types: [UTType(filenameExtension: "dylib") ?? .data, .data],

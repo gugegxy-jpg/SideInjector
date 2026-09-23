@@ -65,9 +65,14 @@ pub fn sign_bundle(
         .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;
     let out = out_root.join(name);
 
-    signer
-        .sign_path(app, &out)
-        .with_context(|| format!("签名 .app 失败：{}", app.display()))?;
+    let result = signer.sign_path(app, &out);
+    if let Err(ref e) = result {
+        log_msg(&format!("签名失败：{e:#}"));
+        // apple-codesign 的 IO 错误不带路径；这里统计「输出目录已产出多少文件、
+        // 最后写入的是哪几个」，即可推断它走到哪儿才失败。
+        report_partial_output(&out_root);
+    }
+    result.with_context(|| format!("签名 .app 失败：{}", app.display()))?;
 
     // 用签名后的产物替换原 .app
     fs::remove_dir_all(app).with_context(|| format!("移除原 .app 失败：{}", app.display()))?;
@@ -281,6 +286,46 @@ fn walk_bundle(dir: &Path, files: &mut usize, links: &mut usize, broken: &mut Ve
         } else {
             *files += 1;
         }
+    }
+}
+
+/// 签名失败后统计输出目录里已产出的内容，并按**写入顺序**（unix ctime）列出最后几个文件。
+///
+/// apple-codesign 是按 walkdir 排序逐个复制/签名的，所以「最后写入的那个文件」的
+/// 后继就是出错点；若一个文件都没产出，说明失败发生在最开始的 bundle 判定阶段
+/// （例如某个目录被误判成 bundle、按不存在的路径去读 Info.plist）。
+fn report_partial_output(out_root: &Path) {
+    let mut entries: Vec<(i64, i64, String, u64)> = Vec::new();
+    let mut dirs = 0usize;
+    let mut stack = vec![out_root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            let Ok(md) = fs::symlink_metadata(&p) else { continue };
+            if md.is_dir() {
+                dirs += 1;
+                stack.push(p);
+            } else {
+                #[cfg(unix)]
+                let stamp = {
+                    use std::os::unix::fs::MetadataExt;
+                    (md.ctime(), md.ctime_nsec())
+                };
+                #[cfg(not(unix))]
+                let stamp = (0i64, 0i64);
+                entries.push((stamp.0, stamp.1, p.display().to_string(), md.len()));
+            }
+        }
+    }
+    log_msg(&format!(
+        "签名中断：输出目录已产出文件 {} 个，子目录 {dirs} 个（{}）",
+        entries.len(),
+        out_root.display()
+    ));
+    entries.sort();
+    for (_, _, p, n) in entries.iter().rev().take(5) {
+        log_msg(&format!("签名中断：最后写入 {p}（{n} 字节）"));
     }
 }
 

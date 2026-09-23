@@ -34,6 +34,8 @@ struct ContentView: View {
                 ShareSheet(activityItems: [url])
             }
         }
+        // 键盘「完成」只在最外层挂一次，避免多处嵌套导致出现位置异常。
+        .keyboardDoneButton()
     }
 
     // MARK: - 主页
@@ -169,7 +171,6 @@ struct ContentView: View {
                 Divider()
                 FileRow(title: "配对文件 (iOS 18–26 需要)", url: $model.pairingFile)
             }
-            .keyboardDoneButton()
         }
     }
 

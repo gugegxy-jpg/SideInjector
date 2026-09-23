@@ -29,7 +29,7 @@ struct LibraryView: View {
             .padding(.bottom, 12)
         }
         .scrollIndicators(.hidden)
-        .scrollDismissesKeyboard(.interactively)
+        .scrollDismissesKeyboard(.immediately)   // 一滚动就收起键盘
         .sheet(item: $editingCert) { CertEditView(cert: $0) }
         .confirmationDialog("删除该证书？", isPresented: certDeleteShown, presenting: pendingDeleteCert) { c in
             Button("删除", role: .destructive) {
@@ -92,11 +92,15 @@ struct LibraryView: View {
                 TextField("名称（如：我的开发证书）", text: $newName)
                     .textFieldStyle(.plain)
                     .fieldBackground()
+                    .submitLabel(.done)
+                    .onSubmit { dismissKeyboardNow() }
                 FilePickRow(title: "P12 证书", url: $newP12,
                             types: [UTType(filenameExtension: "p12") ?? .data, .data])
                 SecureField("P12 密码", text: $newPass)
                     .textFieldStyle(.plain)
                     .fieldBackground()
+                    .submitLabel(.done)
+                    .onSubmit { dismissKeyboardNow() }
                 FilePickRow(title: "描述文件", url: $newProv,
                             types: [UTType(filenameExtension: "mobileprovision") ?? .data, .data])
 
@@ -115,8 +119,6 @@ struct LibraryView: View {
                     Text(errorTip).font(.caption).foregroundStyle(.red)
                 }
             }
-            // 密码框等输入后，键盘上方提供「完成」以收起键盘。
-            .keyboardDoneButton()
         }
     }
 
@@ -277,9 +279,13 @@ struct CertEditView: View {
             Form {
                 Section("名称") {
                     TextField("名称", text: $name)
+                        .submitLabel(.done)
+                        .onSubmit { dismissKeyboardNow() }
                 }
                 Section("P12 密码") {
                     SecureField("密码", text: $password)
+                        .submitLabel(.done)
+                        .onSubmit { dismissKeyboardNow() }
                 }
                 Section("替换文件（可选）") {
                     FilePickRow(title: "P12 证书", url: $newP12,

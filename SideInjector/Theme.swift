@@ -136,19 +136,28 @@ private struct FieldBackground: ViewModifier {
     }
 }
 
+/// 收起当前键盘。
+func dismissKeyboardNow() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                    to: nil, from: nil, for: nil)
+}
+
 extension View {
     /// 给 .plain 文本/密码框套上应用的凹陷字段背景。
     func fieldBackground() -> some View { modifier(FieldBackground()) }
 
-    /// 在键盘上方挂一个「完成」按钮，用于收起键盘（否则密码框输入后无处收起）。
+    /// 在键盘右上角挂一个「完成」按钮，用于收起键盘。
+    /// 用「单个 ToolbarItem + 内部 HStack(Spacer + Button) 并撑满宽度」，
+    /// 位置比 ToolbarItemGroup 更稳定（固定贴右，不会被居中或挤到左侧）。
     func keyboardDoneButton() -> some View {
         toolbar {
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("完成") {
-                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                                    to: nil, from: nil, for: nil)
+            ToolbarItem(placement: .keyboard) {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    Button("完成") { dismissKeyboardNow() }
+                        .font(.body.weight(.semibold))
                 }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
     }

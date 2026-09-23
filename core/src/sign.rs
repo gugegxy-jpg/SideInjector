@@ -46,8 +46,6 @@ pub fn sign_bundle(
     let entitlements = extract_profile_entitlements(&prov_data)?;
     settings.set_entitlements_xml(SettingsScope::Main, entitlements.as_str())?;
 
-    let signer = UnifiedSigner::new(settings);
-
     // 不要用 sign_path_in_place：对「目录型 bundle」它会先把目标文件删掉、再从源路径复制，
     // 而 in-place 时输入与输出是同一个路径 —— 等于删掉源文件后再去 lstat 它，直接 ENOENT。
     // 这里改成签到一个独立输出目录，成功后再整体替换回原 .app（等价于 CLI 的 -o）。
@@ -65,14 +63,37 @@ pub fn sign_bundle(
         .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;
     let out = out_root.join(name);
 
-    let result = signer.sign_path(app, &out);
-    if let Err(ref e) = result {
-        log_msg(&format!("签名失败：{e:#}"));
-        // apple-codesign 的 IO 错误不带路径；这里统计「输出目录已产出多少文件、
-        // 最后写入的是哪几个」，即可推断它走到哪儿才失败。
+    // ① 先深签：递归重签所有嵌套 bundle（最规范）。
+    let result = UnifiedSigner::new(settings.clone()).sign_path(app, &out);
+    if let Err(e) = result {
+        log_msg(&format!("深签失败：{e:#}"));
+        if let Some(b) = crate::logbridge::last_bundle() {
+            log_msg(&format!("深签失败：最后进入的嵌套 bundle = {b}"));
+        }
+        // apple-codesign 的 IO 错误不带路径；统计输出目录已产出的内容可推断它走到哪儿。
         report_partial_output(&out_root);
+
+        // ② 回退浅签：不递归进嵌套 bundle，把它们整体原样复制、只重签主 App。
+        //    等价于 rcodesign --shallow：第三方 framework 保持原签名，
+        //    主 App 的 CodeResources 按原样记录其哈希，iOS 仍能正常校验与运行。
+        log_msg("改为浅签重试（不重签嵌套代码，仅重签主 App）…");
+        let mut shallow = settings.clone();
+        shallow.set_shallow(true);
+        let _ = fs::remove_dir_all(&out_root);
+        fs::create_dir_all(&out_root)
+            .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;
+        UnifiedSigner::new(shallow)
+            .sign_path(app, &out)
+            .map_err(|e2| {
+                log_msg(&format!("浅签也失败：{e2:#}"));
+                report_partial_output(&out_root);
+                e2
+            })
+            .with_context(|| {
+                format!("签名 .app 失败（深签与浅签均失败）：{}", app.display())
+            })?;
+        log_msg("浅签成功：主 App 已重签，嵌套代码保持原签名");
     }
-    result.with_context(|| format!("签名 .app 失败：{}", app.display()))?;
 
     // 用签名后的产物替换原 .app
     fs::remove_dir_all(app).with_context(|| format!("移除原 .app 失败：{}", app.display()))?;

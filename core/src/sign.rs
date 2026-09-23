@@ -92,6 +92,17 @@ pub fn sign_bundle(
     log_msg(&format!("深签（自实现）：待重签嵌套代码 {} 项", nested.len()));
     let mut failed = 0usize;
     for item in &nested {
+        // 关键：bundle 主可执行文件的签名标识取自 Info.plist 的 CFBundleIdentifier，
+        // 所以这里先把每项的 CFBundleIdentifier 打出来 —— 若它缺失，重签后依然无法
+        // 让「签名标识 == bundle id」，installd 会报 MismatchedBundleIDSigningIdentifier。
+        let id = bundle_id_of(item);
+        log_msg(&format!(
+            "  重签：{}（CFBundleIdentifier={}）",
+            item.file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            id.clone().unwrap_or_else(|| "**缺失**".to_string())
+        ));
         match sign_in_place(item, &nested_settings) {
             Ok(()) => {}
             Err(e) => {
@@ -100,6 +111,11 @@ pub fn sign_bundle(
                     "  重签失败（保留原签名）：{} —— {e:#}",
                     item.display()
                 ));
+                if let Some(b) = crate::logbridge::last_bundle() {
+                    log_msg(&format!("    最后进入的 bundle：{b}"));
+                }
+                // 复现 apple-bundles 的判定规则，定位它「看到的」路径为何不存在。
+                diagnose_bundle(item);
             }
         }
     }
@@ -108,6 +124,12 @@ pub fn sign_bundle(
         nested.len() - failed,
         failed
     ));
+    if failed > 0 {
+        log_msg(&format!(
+            "⚠️ 有 {failed} 项嵌套代码未能重签（保留原签名）：安装时可能被 installd 以 \
+             MismatchedBundleIDSigningIdentifier / 资源封印不匹配为由拒绝"
+        ));
+    }
 
     // ② 再浅签主 App：嵌套代码保持刚刚重签的版本（浅签不会覆盖它们），
     //    同时把最终内容整体封进主 App 的 CodeResources。
@@ -173,6 +195,32 @@ fn collect_signable_nested(app: &Path) -> Vec<std::path::PathBuf> {
     }
     found.sort_by(|a, b| b.0.cmp(&a.0));
     found.into_iter().map(|(_, p)| p).collect()
+}
+
+/// 读出一个 bundle 的 `CFBundleIdentifier`。
+///
+/// 为什么需要它：apple-codesign 对 **bundle 主可执行文件**的签名标识
+/// 取自 Info.plist 的 CFBundleIdentifier（`set_binary_identifier` 对主可执行无效）。
+/// 若该键缺失，重签后也修不掉「签名标识 ≠ bundle id」，installd 会拒绝安装。
+fn bundle_id_of(path: &Path) -> Option<String> {
+    let candidates = [
+        path.join("Info.plist"),                              // iOS 应用 / framework（扁平）
+        path.join("Contents/Info.plist"),                     // macOS 风格
+        path.join("Resources/Info.plist"),                    // versioned framework（软链目标）
+        path.join("Versions/Current/Resources/Info.plist"),    // versioned framework
+    ];
+    for c in candidates {
+        if let Ok(v) = plist::Value::from_file(&c) {
+            if let Some(id) = v
+                .as_dictionary()
+                .and_then(|d| d.get("CFBundleIdentifier"))
+                .and_then(|x| x.as_string())
+            {
+                return Some(id.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// 就地把一个代码项（bundle 或 dylib）重签：签进临时目录，成功后再整体替换回去。

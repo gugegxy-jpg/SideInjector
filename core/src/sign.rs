@@ -64,8 +64,10 @@ pub fn sign_bundle(
     let out = out_root.join(name);
 
     // ① 先深签：递归重签所有嵌套 bundle（最规范）。
-    let result = UnifiedSigner::new(settings.clone()).sign_path(app, &out);
-    if let Err(e) = result {
+    //    signer 先绑定到局部变量再调用，避免在临时值上链式调用带来的生存期问题。
+    let signer = UnifiedSigner::new(settings.clone());
+    let result = signer.sign_path(app, &out);
+    if let Err(ref e) = result {
         log_msg(&format!("深签失败：{e:#}"));
         if let Some(b) = crate::logbridge::last_bundle() {
             log_msg(&format!("深签失败：最后进入的嵌套 bundle = {b}"));
@@ -82,16 +84,13 @@ pub fn sign_bundle(
         let _ = fs::remove_dir_all(&out_root);
         fs::create_dir_all(&out_root)
             .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;
-        UnifiedSigner::new(shallow)
-            .sign_path(app, &out)
-            .map_err(|e2| {
-                log_msg(&format!("浅签也失败：{e2:#}"));
-                report_partial_output(&out_root);
-                e2
-            })
-            .with_context(|| {
-                format!("签名 .app 失败（深签与浅签均失败）：{}", app.display())
-            })?;
+        let signer2 = UnifiedSigner::new(shallow);
+        let r2 = signer2.sign_path(app, &out);
+        if let Err(ref e2) = r2 {
+            log_msg(&format!("浅签也失败：{e2:#}"));
+            report_partial_output(&out_root);
+        }
+        r2.with_context(|| format!("签名 .app 失败（深签与浅签均失败）：{}", app.display()))?;
         log_msg("浅签成功：主 App 已重签，嵌套代码保持原签名");
     }
 

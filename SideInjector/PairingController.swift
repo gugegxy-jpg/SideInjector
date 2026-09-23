@@ -3,7 +3,14 @@ import Combine
 import Network
 
 /// 设备端自配对控制器：启动 Rust 配对主机 + Bonjour 广播 + PIN 展示 + 完成检测。
-/// 参考 SideInstaller 的 PairingController / PairingManager。
+///
+/// 代码出处（开源署名）：参考 FrizzleM/SideInstaller 的 `PairingController` / `PairingManager`
+///   —— https://github.com/FrizzleM/SideInstaller
+///   许可：SideInstaller License（Copyright © 2026 FrizzleM）：允许使用 / 修改 / 以源码形式
+///   再分发（须署名 "SideInstaller by FrizzleM"、附许可并标明修改）；禁止商业使用；
+///   禁止再分发其官方构建 / IPA。
+///   本文件改动：状态一律取自 Rust 侧（si_pairing_* 轮询），并增加了 Network 权限探测与
+///   配对文件持久化路径。
 final class PairingController: NSObject, ObservableObject, NetServiceDelegate {
     static let shared = PairingController()
 

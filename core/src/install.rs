@@ -5,7 +5,11 @@
 //!   usbmuxd 27015 在 127.0.0.1、VPN 地址（10.7.0.0）、WiFi 地址上全部超时。
 //!   也就是说 iOS 17+ 的设备端安装只有 RSD 这一条路。
 //!
-//! 链路（全部用 `idevice` crate，MIT 许可；不涉及任何非商业代码）：
+//! 代码出处（开源署名）：协议实现全部来自 `idevice` crate
+//!   —— https://github.com/jkcoxson/idevice （MIT，Copyright © Jackson Coxson）。
+//!   本文件未使用 SideInstaller 的代码（安装链路的实现已由 `idevice` 提供）。
+//!
+//! 链路：
 //!   TcpStream::connect(127.0.0.1:49152)
 //!     → RsdHandshake::new(stream)                      握手，拿到服务表（含各服务端口）
 //!     → IpAddr 作为 RsdProvider（其 connect_to_service_port 就是普通 TCP）

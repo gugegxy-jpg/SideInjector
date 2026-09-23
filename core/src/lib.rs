@@ -8,6 +8,13 @@
 //!   5. si_install_ipa —— 设备端安装（CoreDevice/RSD 链路，协议来自 idevice crate，见 install.rs）
 //!
 //! 所有函数返回 0 表示成功，-1 表示失败；失败原因通过日志回调吐出。
+//!
+//! 开源出处（署名）：
+//!   - apple-codesign / apple-bundles —— indygreg/apple-platform-rs（MPL-2.0）→ sign.rs、logbridge.rs
+//!   - idevice —— jkcoxson/idevice（MIT）→ install.rs、pair.rs
+//!   - SideInstaller —— FrizzleM/SideInstaller（自定义许可，禁止商业使用，须署名）→
+//!     pair.rs、InstallEngine.swift、PairingController.swift、Theme.swift、ContentView.swift
+//!   完整说明见仓库根目录 THIRD_PARTY_NOTICES.md 与 README「代码出处与致谢」。
 
 mod inject;
 mod sign;

@@ -1,7 +1,12 @@
 import SwiftUI
 
 /// 共享视觉语言：品牌色、渐变，以及每个页面由之拼装出的卡片、按钮与头部。
-/// 风格参照 FrizzleM/SideInstaller 的 Theme.swift。
+///
+/// 代码出处（开源署名）：视觉风格参照 FrizzleM/SideInstaller 的 `Theme.swift`
+///   —— https://github.com/FrizzleM/SideInstaller
+///   许可：SideInstaller License（Copyright © 2026 FrizzleM）：须署名
+///   "SideInstaller by FrizzleM" 并标明修改，禁止商业使用。
+///   本文件为按本 App 需要重新编写的自有代码，仅风格参照，非逐行复制。
 enum Theme {
     /// 主品牌色，深蓝。
     static let accent = Color(red: 0.13, green: 0.44, blue: 0.96)

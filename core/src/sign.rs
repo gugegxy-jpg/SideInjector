@@ -2,6 +2,17 @@
 //!
 //! iOS 禁止 App 通过 fork/exec 启动子进程（spawn 会报 `operation not permitted`），
 //! 因此不能把 rcodesign 当外部二进制调用；这里直接链接 apple-codesign 库完成签名。
+//!
+//! 代码出处（开源署名）：
+//!   库依赖：apple-codesign / apple-bundles —— https://github.com/indygreg/apple-platform-rs
+//!          许可：MPL-2.0（文件级弱著佐权）。本仓库**未修改其源码**，仅作库链接使用；
+//!          分发本 App 时按 MPL-2.0 提供其源码获取地址（crates.io / 上游仓库）即可。
+//!   参考实现：下方 `diagnose_bundle` / `classify_bundle` / `report_bundle` 是阅读其
+//!          `apple-bundles` 的 `DirectoryBundle` 实现（`shallow` 判定、优先
+//!          `Resources/Info.plist`、嵌套 bundle 候选规则）后写成的**镜像检查**，
+//!          用于复现它的判定结果、定位它抛出的「不带路径」的 ENOENT。
+//!   本文件改动：签名调用链（深签 → 浅签兜底、Entitlements 提取、签出到独立目录
+//!          `.si_signed`、失败时报告输出目录进度）均为本项目自有实现。
 
 use crate::log_msg;
 use anyhow::{Context, Result};

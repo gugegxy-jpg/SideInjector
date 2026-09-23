@@ -1,6 +1,17 @@
 //! 设备端自配对（Remote Pairing）：在 App 本进程内起 TCP 服务，
 //! 设备（iOS 27+ 开发者模式）通过 Bonjour 发现本机并连入完成配对，
-//! 产出 RpPairingFile（无需 Mac）。参考 FrizzleM/SideInstaller 的 rust-core/src/pairing.rs。
+//! 产出 RpPairingFile（无需 Mac）。
+//!
+//! 代码出处（开源署名）：
+//!   协议实现：`idevice` crate 的 `remote_pairing` —— https://github.com/jkcoxson/idevice
+//!          许可：MIT（Copyright © Jackson Coxson）。
+//!   参考实现：FrizzleM/SideInstaller —— https://github.com/FrizzleM/SideInstaller
+//!          对应文件：rust-core/src/pairing.rs
+//!          许可：SideInstaller License（Copyright © 2026 FrizzleM）——
+//!                允许使用 / 修改 / 以源码形式再分发（须署名 "SideInstaller by FrizzleM"、
+//!                附该许可并标明所做修改）；禁止商业使用；禁止再分发其官方构建 / IPA。
+//!   本文件改动：主机启停与状态上报改为「后台线程 + 全局状态 + Swift 轮询」模型
+//!          （si_pairing_start / _status / _port / _pin / _error …），并补了机型标识与错误上报。
 //!
 //! 采用「后台线程 + 全局状态 + Swift 轮询」的模型（避免 C 函数指针回调的复杂度）：
 //!   - si_pairing_start  启动配对线程

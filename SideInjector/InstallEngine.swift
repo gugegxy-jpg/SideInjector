@@ -36,8 +36,11 @@ func withTimeout<T>(seconds: Double, _ body: @escaping () async throws -> T) asy
 ///
 /// 为什么不能写死 127.0.0.1：不同 loopback VPN 映射到的地址并不固定
 /// （StosVPN 常见 10.7.0.1，也有 10.7.0.2 等），写死回环地址会直接连接超时。
-/// 参考 SideInstaller 的做法：把 RSD 地址、回环、以及各本地接口地址一起作为候选，
-/// 在一个统一超时内逐个尝试。
+/// 代码出处（开源署名）：候选地址的枚举策略参考 FrizzleM/SideInstaller
+///   —— https://github.com/FrizzleM/SideInstaller
+///   许可：SideInstaller License（Copyright © 2026 FrizzleM，须署名，禁止商业使用）。
+///   本文件改动：实际连接与安装走本项目 Rust core 的 `idevice`（MIT）实现，
+///   本文件只负责候选枚举、超时控制与错误提示。
 enum TunnelNet {
     /// 本机所有 IPv4 地址（含接口名）。
     static func allIPv4() -> [(name: String, ip: String)] {
@@ -170,7 +173,9 @@ final class InstallEngine {
             }
         }
 
-        var lastPercent = -2
+        // 必须显式写成 Int32：si_install_progress() 返回 Int32，
+        // 用 `-2` 字面量会让编译器推断成 Int，后面 `lastPercent = p` 就编译不过。
+        var lastPercent: Int32 = -2
         while !state.done {
             if Task.isCancelled { break }
             let p = RustBridge.shared.installProgress()

@@ -1,6 +1,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+// 首页 UI 与交互风格参照 FrizzleM/SideInstaller
+//   —— https://github.com/FrizzleM/SideInstaller
+//   许可：SideInstaller License（Copyright © 2026 FrizzleM）：
+//   须署名 "SideInstaller by FrizzleM" 并标明修改；禁止商业使用；禁止再分发其官方构建 / IPA。
+//   本文件为自有实现，仅布局与交互风格对齐（全宽自适应、四态步骤图标、
+//   按钮内显示当前阶段、仅安装时显示进度条）。完整说明见 THIRD_PARTY_NOTICES.md。
 struct ContentView: View {
     @EnvironmentObject var model: Model
     @EnvironmentObject var log: LogStore

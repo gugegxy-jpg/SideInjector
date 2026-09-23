@@ -5,6 +5,10 @@
 //! 是哪个 bundle / 哪个文件出问题。打开它们的日志后，就能看到
 //! `entering nested bundle …`、`copying file …`、`writing sealed resources to …`
 //! 之类的进度，从而知道它死在什么地方。
+//!
+//! 代码出处（开源署名）：桥接对象为 apple-codesign / apple-bundles
+//!   —— https://github.com/indygreg/apple-platform-rs ，许可 MPL-2.0。
+//!   本文件是本项目自有的 `log::Log` 实现（转发到 App 日志），未使用该仓库的代码。
 
 use crate::log_msg;
 use log::{LevelFilter, Log, Metadata, Record};

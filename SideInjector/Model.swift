@@ -22,6 +22,7 @@ enum RunOutcome: Equatable {
 /// - 进度是**真实**的：只有安装真正成功才到 100%，失败/暂停绝不会显示「已完成」。
 /// - 「设备配对」是流程中的一个阶段，且**只需一次**：已配对会自动跳过。
 /// - 任一步失败即**暂停并保留现场**，用户可点「继续」从该步续跑，也可点「取消」放弃。
+/// - 启动前的校验/准备若失败，会通过 `inputError` 弹窗明确告知（不再「点了没反应」）。
 final class Model: ObservableObject {
     static let shared = Model()
 
@@ -50,6 +51,8 @@ final class Model: ObservableObject {
     @Published var stageIndex: Int = -1
     @Published var pauseReason: String? = nil
     @Published var shareItem: URL? = nil
+    /// 启动前校验/准备失败的原因（非 nil 时界面弹窗提示）。
+    @Published var inputError: String? = nil
 
     /// 全流程阶段。配对只需一次：已配对会自动跳过该阶段。
     let stages = ["解压 IPA", "注入 dylib", "修改 Bundle 信息", "重签", "打包 IPA", "设备配对", "安装到设备"]
@@ -116,10 +119,20 @@ final class Model: ObservableObject {
 
     func run() {
         guard !busy else { return }
-        guard let ipa else { status = "请先选择 IPA 文件"; return }
-        guard certP12 != nil else { status = "请先在「库」页签保存证书，再在上方下拉中选择"; return }
-        guard profile != nil else { status = "所选证书缺少描述文件，请到「库」页签重新添加"; return }
 
+        // 1) 先校验，失败立刻弹窗（此时不动日志，方便看到上次的现场）。
+        guard let ipa else { return failInput("请先选择 IPA 文件") }
+        guard certP12 != nil else {
+            return failInput("还没有选择证书：请到「库」页签添加证书，再在首页下拉中选择")
+        }
+        guard profile != nil else {
+            return failInput("所选证书缺少描述文件（mobileprovision），请到「库」页签编辑该证书并重新选择")
+        }
+
+        // 2) 准备（把文件复制进沙盒）。失败也弹窗，并给出是哪个文件出了问题。
+        guard let ctx = buildContext(ipa: ipa) else { return }
+
+        // 3) 真正要跑了，才清空上一次的日志。
         LogStore.shared.clear()
         shareItem = nil
         stageIndex = -1
@@ -129,12 +142,18 @@ final class Model: ObservableObject {
         mode = .full
         installOnlyURL = nil
 
-        guard let ctx = buildContext(ipa: ipa) else { return }
         self.ctx = ctx
         resumeStep = 0
         outcome = .running
         status = "开始处理…"
         runFlow(from: 0, ctx: ctx)
+    }
+
+    /// 启动前失败：记录日志并弹窗。
+    private func failInput(_ msg: String) {
+        status = msg
+        inputError = msg
+        LogStore.shared.append("无法开始：\(msg)")
     }
 
     /// 「库」里点击一条已签名 IPA → 直接安装（只跑安装阶段）。
@@ -228,11 +247,21 @@ final class Model: ObservableObject {
         }
 
         guard let ipaCopy = copyIn(ipa, "in.ipa") else {
-            status = "无法读取 IPA 文件（系统拒绝访问，请换用「文件」App 内可访问的位置）"
+            failInput("无法读取 IPA 文件「\(ipa.lastPathComponent)」：该文件可能已被系统清理或无权访问，请重新选择 IPA")
+            return nil
+        }
+
+        guard let p12Copy = copyIn(certP12, "cert.p12") else {
+            failInput("无法读取证书里的 P12 文件：请到「库」页签编辑该证书并重新选择 P12")
+            return nil
+        }
+        guard let provCopy = copyIn(profile, "profile.mobileprovision") else {
+            failInput("无法读取证书里的描述文件（mobileprovision）：请到「库」页签编辑该证书并重新选择")
             return nil
         }
 
         // 多个 dylib：逐个复制进沙盒，注入名默认取文件名（去重、补 .dylib 后缀）。
+        let pairingCopy = copyIn(pairingFile, "pairing.plist")
         var copiedDylibs: [(url: URL, name: String)] = []
         var usedNames = Set<String>()
         for (idx, src) in dylibs.enumerated() {
@@ -241,19 +270,9 @@ final class Model: ObservableObject {
             if let dst = copyIn(src, "dylib_\(idx)_\(name)") {
                 copiedDylibs.append((url: dst, name: name))
             } else {
-                LogStore.shared.append("跳过无法读取的 dylib：\(src.lastPathComponent)")
+                LogStore.shared.append("跳过无法读取的 dylib：\(src.lastPathComponent)（请重新选择）")
             }
         }
-
-        guard let p12Copy = copyIn(certP12, "cert.p12") else {
-            status = "无法读取 P12 证书（系统拒绝访问）"
-            return nil
-        }
-        guard let provCopy = copyIn(profile, "profile.mobileprovision") else {
-            status = "无法读取 mobileprovision 描述文件（系统拒绝访问）"
-            return nil
-        }
-        let pairingCopy = copyIn(pairingFile, "pairing.plist")
 
         let tmp = fm.temporaryDirectory.appendingPathComponent("si_out_\(UUID().uuidString)")
         let outIpa = fm.temporaryDirectory.appendingPathComponent("signed_\(UUID().uuidString).ipa")

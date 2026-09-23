@@ -37,6 +37,17 @@ struct ContentView: View {
         }
         // 键盘「完成」只在最外层挂一次，避免多处嵌套导致出现位置异常。
         .keyboardDoneButton()
+        // 启动前校验/准备失败时弹窗说明原因（否则会「点了没反应」）。
+        .alert("无法开始", isPresented: inputErrorShown) {
+            Button("好", role: .cancel) { model.inputError = nil }
+        } message: {
+            Text(model.inputError ?? "")
+        }
+    }
+
+    private var inputErrorShown: Binding<Bool> {
+        Binding(get: { model.inputError != nil },
+                set: { if !$0 { model.inputError = nil } })
     }
 
     // MARK: - 主页

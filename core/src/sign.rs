@@ -4,7 +4,7 @@
 //! 因此不能把 rcodesign 当外部二进制调用；这里直接链接 apple-codesign 库完成签名。
 
 use crate::log_msg;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use apple_codesign::cryptography::parse_pfx_data;
 use apple_codesign::{SettingsScope, SigningSettings, UnifiedSigner};
 use std::fs;
@@ -20,11 +20,21 @@ pub fn sign_bundle(
     let p12 = p12.ok_or_else(|| anyhow::anyhow!("缺少 p12 证书路径"))?;
     let prov = prov.ok_or_else(|| anyhow::anyhow!("缺少 mobileprovision 描述文件"))?;
 
-    let p12_data = fs::read(p12)?;
-    let prov_data = fs::read(prov)?;
+    log_msg(&format!(
+        "sign_bundle: app={} p12={} prov={}",
+        app.display(),
+        p12,
+        prov
+    ));
+    if !app.exists() {
+        anyhow::bail!("待签名的 .app 不存在：{}", app.display());
+    }
+
+    let p12_data = fs::read(p12).with_context(|| format!("读取 P12 证书失败：{p12}"))?;
+    let prov_data = fs::read(prov).with_context(|| format!("读取描述文件失败：{prov}"))?;
 
     // p12 → 证书 + 私钥
-    let (cert, key) = parse_pfx_data(&p12_data, password)?;
+    let (cert, key) = parse_pfx_data(&p12_data, password).context("解析 P12 证书失败（检查密码）")?;
 
     let mut settings = SigningSettings::default();
     settings.set_signing_key(&key, cert);
@@ -36,7 +46,9 @@ pub fn sign_bundle(
     settings.set_entitlements_xml(SettingsScope::Main, entitlements.as_str())?;
 
     let signer = UnifiedSigner::new(settings);
-    signer.sign_path_in_place(app)?;
+    signer
+        .sign_path_in_place(app)
+        .with_context(|| format!("签名 .app 失败：{}", app.display()))?;
 
     log_msg("apple-codesign 库签名完成");
     Ok(())

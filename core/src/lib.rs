@@ -142,7 +142,8 @@ pub extern "C" fn si_sign_bundle(
     ) {
         Ok(_) => 0,
         Err(e) => {
-            log_msg(&format!("sign error: {e}"));
+            // 用 {:#} 打印完整错误链（上下文 + 根因），便于定位是哪个文件缺失。
+            log_msg(&format!("sign error: {e:#}"));
             -1
         }
     }

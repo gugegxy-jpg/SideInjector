@@ -19,8 +19,13 @@ final class PairingController: NSObject, ObservableObject, NetServiceDelegate {
     private let pairingPath: String
 
     private override init() {
-        let dir = FileManager.default.temporaryDirectory
-        pairingPath = dir.appendingPathComponent("rp_pairing.plist").path
+        // 放在 Application Support（持久）而非 tmp：这样才能做到
+        // 「下次使用若检测到已配对，就不再重新配对」。
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                 in: .userDomainMask,
+                                                 appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+        pairingPath = base.appendingPathComponent("rp_pairing.plist").path
         // 若上次已配对过，恢复状态
         if FileManager.default.fileExists(atPath: pairingPath),
            let size = try? FileManager.default.attributesOfItem(atPath: pairingPath)[.size] as? Int,
@@ -179,6 +184,8 @@ final class PairingController: NSObject, ObservableObject, NetServiceDelegate {
             self.pin = nil
             self.status = "已配对：\(deviceName ?? "设备")"
             self.isPairing = false
+            // 若主流程正卡在「设备配对」阶段，配对完成后自动续跑。
+            Model.shared.resume()
         }
     }
 

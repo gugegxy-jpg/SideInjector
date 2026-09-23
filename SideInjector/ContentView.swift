@@ -47,6 +47,7 @@ struct ContentView: View {
         .tint(Theme.accent)
         .animation(.smooth(duration: 0.35), value: model.busy)
         .animation(.smooth(duration: 0.35), value: model.stageIndex)
+        .animation(.smooth(duration: 0.35), value: model.outcome)
         .animation(.smooth(duration: 0.35), value: model.shareItem != nil)
         .sheet(isPresented: $presentingShare) {
             if let url = model.shareItem {
@@ -162,85 +163,122 @@ struct ContentView: View {
 
     private var progressCard: some View {
         PanelCard {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 10) {
-                    Text(model.busy ? "处理中" : "已完成")
-                        .font(.headline)
-                    Spacer(minLength: 4)
-                    Text("\(Int(progress * 100))%")
-                        .font(.headline.monospacedDigit())
-                        .foregroundStyle(Theme.accent)
-                }
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        Capsule()
-                            .fill(Color(.tertiarySystemFill))
-                            .overlay(Capsule().strokeBorder(.white.opacity(0.05), lineWidth: 1))
-                        Capsule()
-                            .fill(Theme.brand)
-                            .frame(width: max(12, geo.size.width * progress))
-                            .animation(.smooth(duration: 0.45), value: progress)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 8) {
+                    Text(model.outcome == .done ? "已完成"
+                         : (model.outcome == .paused ? "已暂停" : "进行中"))
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 6)
+                    if model.outcome == .done {
+                        Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                    } else if model.outcome == .paused {
+                        Image(systemName: "pause.circle.fill").foregroundStyle(Theme.accent)
                     }
                 }
-                .frame(height: 10)
+                // 与 SideInstaller 一致：仅在安装过程中显示线性进度条，
+                // 端点（0 / 1）不显示，因此不会有 0% 或 100% 的残留态。
+                if model.progress > 0, model.progress < 1 {
+                    ProgressView(value: model.progress)
+                        .tint(Theme.accent2)
+                }
+                if model.outcome == .paused, let reason = model.pauseReason {
+                    CalloutCard(tint: .orange) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(reason)
+                                .font(.caption)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button {
+                                model.resume()
+                            } label: {
+                                Label("继续", systemImage: "play.fill")
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+                    }
+                }
                 VStack(spacing: 0) {
                     ForEach(Array(model.stages.enumerated()), id: \.offset) { idx, title in
                         stepRow(idx: idx, title: title)
                         if idx < model.stages.count - 1 {
-                            Divider().padding(.leading, 28)
+                            Divider().padding(.leading, 26)
                         }
                     }
                 }
             }
         }
+        .transition(.cardAppear)
+        .animation(.smooth(duration: 0.35), value: model.stageIndex)
+        .animation(.smooth(duration: 0.35), value: model.outcome)
     }
 
     private func stepRow(idx: Int, title: String) -> some View {
-        let done = idx < model.stageIndex
-        let active = idx == model.stageIndex && model.busy
-        return HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(done ? Color.green : (active ? Theme.accent : Color(.secondarySystemBackground)))
-                    .frame(width: 24, height: 24)
-                Image(systemName: done ? "checkmark" : "circle")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(done || active ? .white : .secondary)
-            }
+        let done = idx < model.stageIndex || (model.outcome == .done)
+        let working = idx == model.stageIndex && model.outcome == .running
+        let pausedHere = idx == model.stageIndex && model.outcome == .paused
+        let failedHere = idx == model.stageIndex && model.outcome == .failed
+
+        let stateText = done ? "完成"
+            : (failedHere ? "失败"
+            : (working ? "进行中" : (pausedHere ? "已暂停" : "等待")))
+        let stateColor: Color = done ? .green
+            : (failedHere ? .red : (pausedHere ? Theme.accent : .secondary))
+
+        return HStack(spacing: 8) {
+            stepIcon(done: done, working: working, pausedHere: pausedHere, failedHere: failedHere)
             Text(title)
-                .font(.subheadline)
-                .foregroundStyle(active ? .primary : (done ? .primary : .secondary))
-                .animation(.smooth(duration: 0.3), value: active)
-            Spacer()
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(done || working || pausedHere ? .primary : .secondary)
+            Spacer(minLength: 6)
+            Text(stateText)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(stateColor)
         }
-        .frame(minHeight: 28)
+        .frame(minHeight: 26)
     }
 
-    private var progress: Double {
-        let count = Double(max(1, model.stages.count))
-        guard model.stageIndex >= 0 else { return 0 }
-        let idx = Double(model.stageIndex)
-        return model.busy ? min((idx + 0.5) / count, 1) : 1
+    /// 四态图标：待办=时钟 / 进行中=小转圈 / 完成=绿勾 / 失败=红叉（对齐 SideInstaller 风格）。
+    @ViewBuilder
+    private func stepIcon(done: Bool, working: Bool, pausedHere: Bool, failedHere: Bool) -> some View {
+        if done {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        } else if failedHere {
+            Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+        } else if working {
+            ProgressView().controlSize(.small)
+        } else if pausedHere {
+            Image(systemName: "pause.circle.fill").foregroundStyle(Theme.accent)
+        } else {
+            Image(systemName: "clock").foregroundStyle(.tertiary)
+        }
     }
 
     // MARK: - 主操作
 
     private var actionButton: some View {
         Button {
-            model.run()
+            if model.outcome == .paused {
+                model.resume()
+            } else {
+                model.run()
+            }
         } label: {
             HStack(spacing: 10) {
-                if model.busy {
+                if model.outcome == .running {
                     ProgressView().tint(.white)
-                    Text("处理中…")
+                    Text(model.status).lineLimit(1)   // 按钮内实时显示当前阶段（同 SideInstaller）
+                } else if model.outcome == .paused {
+                    Image(systemName: "play.fill")
+                    Text("继续")
                 } else {
                     Image(systemName: "syringe.fill")
+                        .contentTransition(.symbolEffect(.replace))
                     Text("注入 + 签名 + 安装")
                 }
             }
         }
         .buttonStyle(PrimaryButtonStyle())
-        .disabled(model.busy)
+        .disabled(model.outcome == .running)
     }
 
     // MARK: - 日志

@@ -48,24 +48,30 @@ final class InstallEngine {
     private let lockdownHost = "127.0.0.1"
     private let lockdownPort: UInt16 = 62078
 
-    func install(ipaPath: String, pairingURL: URL?) async -> InstallResult {
+    /// 安装并**逐步上报真实进度**（0…1）。
+    /// 只有 installd 真正返回 Complete 才算成功——绝不以进度值判定成功。
+    func install(ipaPath: String,
+                 pairingURL: URL?,
+                 onProgress: @escaping (Double, String) -> Void) async -> InstallResult {
         LogStore.shared.append("install: 建立本地回环隧道 → \(lockdownHost):\(lockdownPort)")
         let pairing = pairingURL.flatMap { loadPairing($0) }
 
         do {
-            let conn = try await connectTLS(host: lockdownHost, port: lockdownPort)
+            let conn = try await withTimeout(seconds: 6) {
+                try await connectTLS(host: lockdownHost, port: lockdownPort)
+            }
             defer { conn.cancel() }
 
             let ld = LockdownClient(connection: conn)
-            _ = try await ld.queryType()
+            _ = try await withTimeout(seconds: 6) { try await ld.queryType() }
             LogStore.shared.append("install: lockdownd 握手成功")
 
             if let pairing {
-                try await ld.startSession(pairing: pairing)
+                try await withTimeout(seconds: 10) { try await ld.startSession(pairing: pairing) }
                 LogStore.shared.append("install: 已用提供的配对文件启动会话")
             } else {
                 do {
-                    try await ld.startSession(pairing: nil)
+                    try await withTimeout(seconds: 10) { try await ld.startSession(pairing: nil) }
                     LogStore.shared.append("install: 设备端自配对会话已建立（iOS 27+）")
                 } catch {
                     return .init(ok: false,
@@ -73,14 +79,23 @@ final class InstallEngine {
                 }
             }
 
-            let svc = try await ld.startService("com.apple.mobile.installation_proxy")
+            let svc = try await withTimeout(seconds: 10) {
+                try await ld.startService("com.apple.mobile.installation_proxy")
+            }
             LogStore.shared.append("install: 已取得 installation_proxy 服务（端口 \(svc.port)）")
 
-            let ip = try await connectTLS(host: lockdownHost, port: svc.port, ssl: svc.ssl)
+            let ip = try await withTimeout(seconds: 6) {
+                try await connectTLS(host: lockdownHost, port: svc.port, ssl: svc.ssl)
+            }
             defer { ip.cancel() }
             let inst = InstallationProxy(connection: ip)
-            try await inst.install(ipaPath: ipaPath)
-            return .init(ok: true, message: "安装请求已发送，设备正在安装")
+            // 安装本身可能较慢，给足超时；一旦卡住即抛错 → 主流程暂停并允许「继续」。
+            try await withTimeout(seconds: 300) {
+                try await inst.install(ipaPath: ipaPath) { frac, status in
+                    DispatchQueue.main.async { onProgress(frac, "安装中：\(status)") }
+                }
+            }
+            return .init(ok: true, message: "安装成功")
         } catch {
             return .init(ok: false, message: "回环隧道安装失败：\(error.localizedDescription)")
         }
@@ -299,26 +314,50 @@ final class InstallationProxy {
         }
     }
 
-    /// 通过 PackagePath 安装已位于设备上的 IPA（需 lockdownd/installd 可读该路径）。
-    func install(ipaPath: String) async throws {
+    /// 通过 PackagePath 安装（需 lockdownd/installd 可读该路径）。
+    /// 成功判据是**看到 Status == "Complete"**；任何 Error 或流中断都视为失败。
+    func install(ipaPath: String, onProgress: @escaping (Double, String) -> Void) async throws {
         let req: [String: Any] = [
             "Command": "Install",
             "PackagePath": ipaPath,
-            "ApplicationAttributes": [:]
+            // 必须带 PackageType=Developer，否则 installd 不读内嵌描述文件，
+            // 会在 VerifyingApplication 阶段以 0xe8008015 拒绝。
+            "ClientOptions": ["PackageType": "Developer"]
         ]
         try await sendPlist(req, on: connection)
         while true {
             let resp = try await recvPlist()
             if let err = resp["Error"] as? String {
+                let desc = (resp["ErrorDescription"] as? String)
+                    ?? (resp["ErrorDetail"] as? String) ?? ""
                 throw NSError(domain: "install", code: 5,
-                              userInfo: [NSLocalizedDescriptionKey: err])
+                              userInfo: [NSLocalizedDescriptionKey: desc.isEmpty ? err : "\(err)：\(desc)"])
             }
-            if let status = resp["Status"] as? String {
-                LogStore.shared.append("install[进度]: \(status)")
-                if status == "Complete" { return }
-            } else {
-                return
+            guard let status = resp["Status"] as? String else {
+                throw NSError(domain: "install", code: 6,
+                              userInfo: [NSLocalizedDescriptionKey: "安装流意外结束（未收到 Complete）"])
             }
+            let pct = (resp["PercentComplete"] as? NSNumber)?.doubleValue
+            onProgress(Self.fraction(status: status, percent: pct), status)
+            LogStore.shared.append("install[进度]: \(status)\(pct.map { " \(Int($0))%" } ?? "")")
+            if status == "Complete" { return }
+        }
+    }
+
+    /// installd 各阶段 → 进度分数（0…1）。
+    private static func fraction(status: String, percent: Double?) -> Double {
+        func p() -> Double { percent.map { min(max($0, 0), 100) / 100 } ?? 0 }
+        switch status {
+        case "CreatingStagingDirectory": return 0.05
+        case "ExtractingPackage":        return 0.15
+        case "InspectingPackage":        return 0.30
+        case "TakingInstallLock":        return 0.35
+        case "PreflightingApplication":  return 0.40
+        case "VerifyingApplication":     return 0.55
+        case "InstallingApplication":    return percent.map { 0.55 + 0.35 * min(max($0, 0), 100) / 100 } ?? 0.70
+        case "PostInstallation":         return 0.92
+        case "InstallationComplete", "Complete": return 1.0
+        default:                         return percent != nil ? p() : 0.10
         }
     }
 }

@@ -51,9 +51,17 @@ pub fn install_ipa(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
         bail!("待安装的 IPA 不存在：{}", ipa.display());
     }
     set_percent(0);
+    // 包大小写进日志（重要级）：超大包的问题（内存/磁盘/耗时）全靠它判断。
+    let size = std::fs::metadata(ipa).map(|m| m.len()).unwrap_or(0);
+    let size_text = if size >= 1024 * 1024 * 1024 {
+        format!("{:.1} GB", size as f64 / 1024.0 / 1024.0 / 1024.0)
+    } else {
+        format!("{:.0} MB", size as f64 / 1024.0 / 1024.0)
+    };
     log_msg(&format!(
-        "install: 待安装 {}；配对文件：{}",
+        "install: 待安装 {}（{}）；配对文件：{}",
         ipa.display(),
+        size_text,
         pairing
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "未提供".to_string())
@@ -160,15 +168,31 @@ async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
                  （PC 上用 jitterbugpair / idevicepair 生成的那种）。"
             );
         };
-        log_msg(&format!(
-            "install: 尝试经典通路（lockdownd {host}:62078 + 配对文件 {}）",
-            pairing.display()
-        ));
-        match classic_install(ipa, pairing, host).await {
-            Ok(()) => return Ok(()),
-            Err(e) => {
-                log_msg(&format!("install: 经典通路失败：{e:#}"));
-                errors.push(format!("经典（{host}）：{e:#}"));
+        // 经典通路走的是 idevice 的 `install_package_with_callback`，它对**文件型**包同样是
+        // `tokio::fs::read`（整个 IPA 读进内存）。大包会直接被 iOS jetsam 杀掉 App
+        // ——「崩一下、没日志」最难查，所以这里主动跳过并说明。
+        // （RSD / 免电脑通路不受此限：我们自己分块上传。）
+        const CLASSIC_MAX_BYTES: u64 = 1500 * 1024 * 1024;
+        let size = std::fs::metadata(ipa).map(|m| m.len()).unwrap_or(0);
+        if size > CLASSIC_MAX_BYTES {
+            let msg = format!(
+                "经典通路已跳过：包约 {:.1} GB，超过该通路的内存上限\
+                 （它会把整个 IPA 读进内存，大包会被系统杀掉）。请用 RSD / 免电脑通路。",
+                size as f64 / 1024.0 / 1024.0 / 1024.0
+            );
+            log_msg(&format!("install: {msg}"));
+            errors.push(format!("经典（{host}）：{msg}"));
+        } else {
+            log_msg(&format!(
+                "install: 尝试经典通路（lockdownd {host}:62078 + 配对文件 {}）",
+                pairing.display()
+            ));
+            match classic_install(ipa, pairing, host).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    log_msg(&format!("install: 经典通路失败：{e:#}"));
+                    errors.push(format!("经典（{host}）：{e:#}"));
+                }
             }
         }
     }

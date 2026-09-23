@@ -23,18 +23,25 @@
 
 use crate::log_msg;
 use anyhow::{bail, Context, Result};
+use idevice::afc::opcode::AfcFopenMode;
+use idevice::afc::AfcClient;
 use idevice::remote_pairing::tunnel::connect_tls_psk_tunnel_native;
 use idevice::remote_pairing::{RemotePairingClient, RpPairingFile, RpPairingSocket};
+use idevice::services::installation_proxy::InstallationProxyClient;
 use idevice::services::rsd::RsdHandshake;
 use idevice::tcp::adapter::Adapter;
-use idevice::utils::installation::install_package_with_callback_rsd;
+// 匿名导入 trait：`connect_rsd` 是它们上面的默认方法，方法要用就得让 trait 在作用域内。
+use idevice::{IdeviceService as _, RsdService as _};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context as TaskCtx, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
+
+/// 分块上传的块大小（8 MB）：峰值内存只有几 MB，3.5 GB 的包也不会被 jetsam 杀掉。
+const CHUNK_SIZE: usize = 8 * 1024 * 1024;
 
 /// RP 服务端口候选。设备的 RP 服务经 mDNS（`_remotepairing._tcp`）广播、端口随设备而变；
 /// 设备端自连时实测 49152 可连（RP/RSD 相关服务），先用它，连不上再报错。
@@ -243,20 +250,84 @@ pub async fn install(
         plist::Value::String("Developer".to_string()),
     );
 
-    log_msg("rp: 上传到 /PublicStaging 并安装（AFC + installation_proxy，经隧道）…");
-    install_package_with_callback_rsd(
-        &mut handle,
-        &mut handshake,
-        ipa,
+    // ★ 自己分块上传，**不用** `install_package_with_callback_rsd`：
+    //   上游对「文件型」包是 `tokio::fs::read(&path)` —— 把整个 IPA 读进内存
+    //   （见其 `utils/installation/mod.rs`）。3.5 GB 的包会因此被 iOS 的 jetsam
+    //   直接杀掉，表现为「安装刚开始就崩溃、没有任何错误日志」。
+    //   这里改成 8 MB 分块读 + 逐块写：峰值内存只有几 MB，链路
+    //   （AFC → PublicStaging → installation_proxy Install）与上游完全一致。
+    let local_size = std::fs::metadata(ipa)
+        .map(|m| m.len())
+        .with_context(|| format!("读取待安装 IPA 大小失败：{}", ipa.display()))?;
+    log_msg(&format!(
+        "rp: 上传到 /PublicStaging 并安装（分块上传，包大小约 {} MB）…",
+        local_size / (1024 * 1024)
+    ));
+
+    // 与上游一致：AFC 路径不带前导斜杠。
+    const REMOTE_PKG: &str = "PublicStaging/install.ipa";
+
+    // 7a) AFC 分块上传（AFC 客户端用完即弃，和上游建连方式一致）
+    {
+        let mut afc = AfcClient::connect_rsd(&mut handle, &mut handshake)
+            .await
+            .map_err(|e| anyhow::anyhow!("连接 com.apple.afc 失败：{e:?}"))?;
+        if afc.get_file_info("PublicStaging").await.is_err() {
+            let _ = afc.mk_dir("PublicStaging").await;
+        }
+        // 同名的旧包残留先删掉，避免装上上一次的包。
+        let _ = afc.remove(REMOTE_PKG).await;
+
+        let mut local = tokio::fs::File::open(ipa)
+            .await
+            .with_context(|| format!("打开待安装 IPA 失败：{}", ipa.display()))?;
+        let mut buf = vec![0u8; CHUNK_SIZE];
+        let mut sent: u64 = 0;
+        let mut chunks: u64 = 0;
+        let mut fd = afc
+            .open(REMOTE_PKG, AfcFopenMode::WrOnly)
+            .await
+            .map_err(|e| anyhow::anyhow!("在设备上创建暂存文件失败：{e:?}"))?;
+        loop {
+            let n = local.read(&mut buf).await.context("读取 IPA 失败")?;
+            if n == 0 {
+                break;
+            }
+            fd.write_entire(&buf[..n])
+                .await
+                .map_err(|e| anyhow::anyhow!("上传分块失败（已传 {sent} 字节）：{e:?}"))?;
+            sent += n as u64;
+            chunks += 1;
+            if local_size > 0 {
+                // 上传占前段进度（0..50），安装占后段（50..100），整体单调不回头。
+                on_percent(((sent.saturating_mul(50) / local_size) as i32).min(50));
+            }
+        }
+        fd.close()
+            .await
+            .map_err(|e| anyhow::anyhow!("关闭暂存文件失败：{e:?}"))?;
+        log_msg(&format!(
+            "rp: 分块上传完成（约 {} MB / {} 块）",
+            sent / (1024 * 1024),
+            chunks
+        ));
+    }
+
+    // 7b) installation_proxy 安装
+    let mut inst = InstallationProxyClient::connect_rsd(&mut handle, &mut handshake)
+        .await
+        .map_err(|e| anyhow::anyhow!("连接 com.apple.mobile.installation_proxy 失败：{e:?}"))?;
+    inst.install_with_callback(
+        REMOTE_PKG,
         Some(plist::Value::Dictionary(opts)),
         |(percent, _)| {
-            on_percent(percent as i32);
+            on_percent(50 + ((percent as i32) / 2).clamp(0, 50));
             std::future::ready(())
         },
         (),
     )
     .await
-    .map_err(|e| anyhow::anyhow!("经隧道的安装失败（AFC 上传 / installation_proxy）：{e:?}"))?;
+    .map_err(|e| anyhow::anyhow!("经隧道的安装失败（installation_proxy）：{e:?}"))?;
 
     Ok(())
 }

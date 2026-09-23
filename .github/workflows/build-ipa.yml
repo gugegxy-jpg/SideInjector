@@ -29,16 +29,16 @@ jobs:
       - name: Build Rust xcframework
         run: cd core && bash ./build_xcframework.sh
 
-      - name: Build rcodesign (iOS) and bundle it
-        run: |
-          export SDKROOT=$(xcrun --sdk iphoneos --show-sdk-path)
-          export IPHONEOS_DEPLOYMENT_TARGET=17.0
-          cargo install apple-codesign@0.27.0 --target aarch64-apple-ios --root /tmp/rcodesign-ios
-          mkdir -p SideInjector
-          cp /tmp/rcodesign-ios/bin/rcodesign SideInjector/rcodesign
-          chmod +x SideInjector/rcodesign
-          ls -lh SideInjector/rcodesign
-          /tmp/rcodesign-ios/bin/rcodesign sign --help | head -n 20 || true
+      # 说明：这里原本还有一条
+      #   cargo install apple-codesign@0.27.0 --target aarch64-apple-ios
+      # 用来编译 rcodesign 命令行工具并塞进 App。已移除，因为：
+      #   1) iOS 禁止 App fork/exec 子进程，rcodesign 根本无法被调用；
+      #   2) 现在签名是「进程内库签名」—— core 直接链接 apple-codesign
+      #      （default-features=false），与 rcodesign 无关；
+      #   3) 那条命令用默认特性，会把 notarize / app-store-connect 全家桶
+      #      （aws-sdk-s3、aws-config、app-store-connect、dialoguer、serde_yaml、
+      #      tungstenite… 数百个 crate）一起为 iOS 交叉编译，每次构建要多花好几分钟。
+      # 移除后构建明显更快、IPA 也更小。
 
       - name: Generate Xcode project
         run: xcodegen generate
@@ -96,10 +96,6 @@ jobs:
       - name: Export IPA (signed)
         if: steps.sign.outputs.enabled == 'true'
         run: |
-          # 在导出（重签）前把 rcodesign 放进 .app，让 exportArchive 把它一起签进包；
-          # 若放在导出后再拷，会破坏 App 签名导致安装失败。
-          cp SideInjector/rcodesign build/SideInjector.xcarchive/Products/Applications/SideInjector.app/rcodesign
-          chmod +x build/SideInjector.xcarchive/Products/Applications/SideInjector.app/rcodesign
           xcodebuild -exportArchive \
             -archivePath build/SideInjector.xcarchive \
             -exportOptionsPlist ExportOptions.plist \
@@ -110,9 +106,6 @@ jobs:
         run: |
           mkdir -p build/ipa/Payload
           cp -R build/SideInjector.xcarchive/Products/Applications/SideInjector.app build/ipa/Payload/
-          # archive 校验可能剥离包内未签名的嵌套二进制，archive 之后再拷一次保证 rcodesign 进包
-          cp SideInjector/rcodesign build/ipa/Payload/SideInjector.app/rcodesign
-          chmod +x build/ipa/Payload/SideInjector.app/rcodesign
           cd build/ipa && zip -r ../SideInjector.ipa Payload
 
       - name: Upload IPA

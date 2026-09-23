@@ -13,7 +13,7 @@ SideInjector (SwiftUI)
 sideinjector-core (Rust, 编成 xcframework)
    ├─ ziputil  解/打包 IPA
    ├─ inject   Mach-O 插入 LC_LOAD_DYLIB（constructor 自动执行）
-   ├─ sign     用导入的证书重签（rcodesign CLI 优先）
+   ├─ sign     用导入的证书重签（进程内链接 apple-codesign 库，不走子进程）
    └─ install  设备端安装 ◀── 需接入 SideInstaller rust-core（见下）
 ```
 
@@ -21,7 +21,7 @@ sideinjector-core (Rust, 编成 xcframework)
 
 - ✅ IPA 解包 / 打包（zip）
 - ✅ 主二进制注入 dylib（单切片 arm64 Mach-O；Fat/arm64e 为 TODO）
-- ✅ 证书导入 UI + 用 p12 + mobileprovision 重签（通过打包进 App 的 `rcodesign`）
+- ✅ 证书导入 UI + 用 p12 + mobileprovision 重签（进程内 apple-codesign 库签名；深签失败自动回退浅签）
 - ⬜ 设备端安装传输（CoreDevice 本机回环）
 
 ## 未实现 / 关键风险
@@ -44,10 +44,7 @@ sideinjector-core (Rust, 编成 xcframework)
 rustup target add aarch64-apple-ios
 cd core && ./build_xcframework.sh
 
-# 2. 准备 rcodesign(iOS) 放进 SideInjector/rcodesign，运行时设环境变量
-#    RCODESIGN_PATH = Bundle.main.url(forResource: "rcodesign", ...)?.path
-
-# 3. 生成 Xcode 工程并运行
+# 2. 生成 Xcode 工程并运行（签名由 core 进程内完成，无需再准备任何外部工具）
 brew install xcodegen
 xcodegen generate
 open SideInjector.xcodeproj

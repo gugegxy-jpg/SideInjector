@@ -31,16 +31,5 @@ targets:
         # 同时支持 iPhone 与 iPad，避免 iPad 落入「iPhone 兼容模式」（黑边/2x 放大）。
         # 之前的 LaunchScreen 尝试就是为修这个；根本原因是设备家族未设成 universal。
         TARGETED_DEVICE_FAMILY: "1,2"
-        # 内置 rcodesign(iOS) 由 CI 编译到 SideInjector/rcodesign，
-        # 由下方 scriptPhases 拷进 App 并加可执行权限；运行时设 RCODESIGN_PATH 指向它。
-    scriptPhases:
-      - name: Bundle rcodesign (iOS)
-        shellPath: /bin/sh
-        script: |
-          if [ -f "${SRCROOT}/SideInjector/rcodesign" ]; then
-            cp "${SRCROOT}/SideInjector/rcodesign" "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/rcodesign"
-            chmod +x "${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/rcodesign"
-            echo "bundled rcodesign"
-          else
-            echo "warning: SideInjector/rcodesign not found; in-app signing disabled"
-          fi
+        # 注：不再向 App 内打包 rcodesign 命令行工具（iOS 禁止 fork/exec 子进程调用它），
+        # 签名由 core 进程内链接 apple-codesign 库完成。

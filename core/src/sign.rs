@@ -192,10 +192,37 @@ pub fn sign_bundle(
     // 主 App 自己也要清一遍分离签名残留（理由同 sign_nested_executable）。
     clean_stale_signature_files(app);
 
-    // ② 再浅签主 App：嵌套代码保持刚刚重签的版本（浅签不会覆盖它们），
-    //    同时把最终内容整体封进主 App 的 CodeResources。
+    // ② 再浅签主 App：把最终内容整体封进主 App 的 CodeResources。
+    //
+    // ★ 这里有个反直觉的关键点：apple-codesign 的「浅签」**不是只复制嵌套代码**，
+    //   它会把 app 里所有嵌套 Mach-O 逐个**重新签名**（日志里的
+    //   `signing Mach-O file Frameworks/xxx.framework/xxx`），而那条路径**不会**继承
+    //   `Main` 作用域的标识 —— 标识会被按**二进制名**重算
+    //   （`KAPinField` / `GZIP` / `libbluray`…），把我们上一步逐项签好的结果整个覆盖；
+    //   installd 于是报 `MismatchedBundleIDSigningIdentifier`（原包也是栽在这条规则上）。
+    //
+    //   解法：给每个嵌套 Mach-O 登记一个**路径作用域**的标识
+    //   （`SettingsScope::Path("Frameworks/KAPinField.framework/KAPinField")`）。
+    //   apple-codesign 在按相对路径签这个 Mach-O 时会把该作用域映射成 `Main`，
+    //   于是用我们给的值（= 它的 `CFBundleIdentifier`）。
     let mut shallow = settings.clone();
     shallow.set_shallow(true);
+    let mut registered = 0usize;
+    for item in &nested {
+        if !item.is_dir() {
+            continue;
+        }
+        let (Some(exe), Some(want)) = (main_executable_of(item), bundle_id_of(item)) else {
+            continue;
+        };
+        if let Ok(rel) = exe.strip_prefix(app) {
+            shallow.set_binary_identifier(SettingsScope::Path(rel.to_string_lossy().to_string()), want);
+            registered += 1;
+        }
+    }
+    log_msg(&format!(
+        "浅签阶段登记路径作用域签名标识 {registered} 项（apple-codesign 会逐个重签这些 Mach-O）"
+    ));
     let _ = fs::remove_dir_all(&out_root);
     fs::create_dir_all(&out_root)
         .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;

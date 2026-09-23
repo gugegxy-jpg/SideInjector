@@ -54,9 +54,15 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
 - [x] IPA 解包 / 打包（保留符号链接与权限位）
 - [x] 主二进制注入 dylib，支持一次注入多个（注入名取各自文件名；重名自动加后缀）
 - [x] 改 Bundle ID / 显示名
-- [x] 进程内重签：`apple-codesign` 0.27。嵌套项（framework / appex / 注入 dylib）**逐个只重签主可执行文件**，
+- [x] 进程内重签：`apple-codesign` 0.27。嵌套项（framework / appex）**逐个只重签主可执行文件**，
       并把签名标识强制设为该 bundle 的 `CFBundleIdentifier`（否则 installd 报 `MismatchedBundleIDSigningIdentifier`）；
       资源 bundle 仍按 bundle 级签名（只封资源）；最后**浅签主 App**，把全部内容封进主 App 的 `CodeResources`
+- [x] **浅签阶段会覆盖嵌套签名**，已针对性处理：`apple-codesign` 的「浅签」并非只复制嵌套代码，
+      而是会把 app 内所有嵌套 Mach-O 逐个重签（`signing Mach-O file Frameworks/xxx.framework/xxx`），
+      且该路径**不继承 `Main` 作用域标识** → 标识会按二进制名重算。现为每个嵌套 Mach-O 登记
+      **路径作用域标识**（`SettingsScope::Path("Frameworks/xxx.framework/xxx")`），浅签时用我们给的值
+- [x] **签名标识自检**：签完自行解析新签名的 `CodeDirectory` 把标识读回来逐项比对，
+      收尾在**最终会打进 IPA 的那份 app** 上汇总（`签名标识自检：检查 N 项，不匹配 M 项`，0 才算全对）
 - [x] 证书库：多套证书持久化、可编辑、覆盖安装后**路径按当前数据容器自愈**（不会丢）
 - [x] 已签名 IPA 库：签名成功自动入库，点击即可再次安装
 - [x] 导入即入库：IPA / dylib 落到 `Application Support/Inputs/`，不依赖文档选择器给的临时副本

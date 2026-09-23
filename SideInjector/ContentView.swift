@@ -8,38 +8,40 @@ struct ContentView: View {
     @ObservedObject private var pairing = PairingController.shared
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 18) {
-                header.cascadeItem(0)
-                certCard.cascadeItem(1)
-                inputCard.cascadeItem(2)
-                pairingCard
-                if model.busy || model.stageIndex >= 0 {
-                    progressCard.transition(.cardAppear)
-                }
-                actionButton.cascadeItem(4)
-                if let _ = model.shareItem {
-                    Button {
-                        presentingShare = true
-                    } label: {
-                        Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
+        // 用 ZStack 让背景作为「兄弟层」铺满全屏（含安全区），内容层照常尊重安全区，
+        // 避免把背景当 .background 时安全区延伸失效、灵动岛/Home 条区域露出系统黑底。
+        ZStack(alignment: .top) {
+            AppBackground()
+                .ignoresSafeArea()
+            ScrollView {
+                VStack(spacing: 18) {
+                    header.cascadeItem(0)
+                    certCard.cascadeItem(1)
+                    inputCard.cascadeItem(2)
+                    pairingCard
+                    if model.busy || model.stageIndex >= 0 {
+                        progressCard.transition(.cardAppear)
                     }
-                    .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
-                    .transition(.cardAppear)
+                    actionButton.cascadeItem(4)
+                    if let _ = model.shareItem {
+                        Button {
+                            presentingShare = true
+                        } label: {
+                            Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
+                        .transition(.cardAppear)
+                    }
+                    logCard.cascadeItem(5)
                 }
-                logCard.cascadeItem(5)
+                .padding(20)
+                // iPhone 全宽；iPad 限宽成居中列（参照 SideInstaller 全宽自适应，
+                // 这里给 iPad 一个可读最大列宽，避免超宽拉伸）。
+                .frame(maxWidth: hSize == .regular ? CGFloat(900) : .infinity,
+                       maxHeight: .infinity, alignment: .top)
             }
-            .padding(20)
-            // iPhone 全宽；iPad 限宽成居中列（参照 SideInstaller 全宽自适应，
-            // 这里给 iPad 一个可读最大列宽，避免超宽拉伸）。
-            .frame(maxWidth: hSize == .regular ? CGFloat(900) : .infinity,
-                   maxHeight: .infinity, alignment: .top)
+            .scrollDismissesKeyboard(.interactively)
         }
-        // 关键：把背景直接作为 ScrollView 的背景铺满全屏，内容 top 对齐且撑满高度，
-        // 避免内容比屏幕短时竖直居中、上下露出纯黑块。
-        .background(AppBackground().ignoresSafeArea())
-        .scrollDismissesKeyboard(.interactively)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationBarHidden(true)
         .preferredColorScheme(.dark)
         .tint(Theme.accent)

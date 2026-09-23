@@ -48,8 +48,11 @@ struct AppBackground: View {
                                startPoint: .top, endPoint: .bottom)
                     .opacity(0.5)
             }
-            .ignoresSafeArea()
         }
+        // 关键：ignoresSafeArea 必须作用在最外层（TimelineView 之上），
+        // 否则 TimelineView 不会把「延伸出安全区」的请求向上传递，
+        // 灵动岛/Home 指示条区域会露出系统黑底。
+        .ignoresSafeArea()
     }
 }
 

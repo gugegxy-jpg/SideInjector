@@ -286,7 +286,8 @@ async fn classic_install(ipa: &Path, pairing_path: &Path, host: Ipv4Addr) -> Res
 }
 
 /// 统一记录进度（每跨过 5% 记一条，避免刷屏）。
-fn report_percent(p: i32) {
+/// `pub(crate)`：RP 隧道通路（rp.rs）也通过它上报百分比。
+pub(crate) fn report_percent(p: i32) {
     let prev = INSTALL_PERCENT.swap(p, Ordering::Relaxed);
     if p / 5 != prev / 5 {
         log_msg(&format!("install[进度]: {p}%"));

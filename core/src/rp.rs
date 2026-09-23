@@ -155,8 +155,9 @@ pub async fn install(
         &mut handshake,
         ipa,
         Some(plist::Value::Dictionary(opts)),
-        |(percent, _)| async move {
-            crate::install::report_percent(percent as i32);
+        |(percent, _)| {
+            on_percent(percent as i32);
+            std::future::ready(())
         },
         (),
     )

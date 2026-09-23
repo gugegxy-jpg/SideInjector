@@ -64,7 +64,8 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       点「导出」保存 / 分享到「文件」App
 - [x] 产物文件名可读：导出为 `<原名>-signed.ipa` / `<原名>-injected-unsigned.ipa`（原先为 `signed_<UUID>.ipa`）
 - [x] 设备端自配对（Remote Pairing）：iOS 27+ 无需电脑；配对文件持久化，流程内只做一次
-- [x] 设备端安装：CoreDevice / RSD 链路，带**真实进度**（installd 返回成功才算完成）
+- [x] **免电脑安装**：RemotePairing 隧道（自配对记录 → TLS-PSK → CDTunnel）+ 用户态 TCP → RSD → AFC + installation_proxy，
+      带**真实进度**（installd 返回成功才算完成）；失败时自动回落经典 lockdownd 通路
 - [x] 流程控制：任一步失败即暂停并保留现场，「继续」从该步续跑；运行中可取消并清理临时文件
 - [x] 环境自检卡片：iOS 版本与配对能力、loopback VPN 状态、隧道端口探测（62078 / 27015 / 49152）
 - [ ] 注入 Fat / arm64e 主二进制（目前仅单切片 arm64）
@@ -74,37 +75,44 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
 
 ## 安装链路（重点）
 
-iOS 17+ 的**设备端**安装只有一条路：**CoreDevice / RSD**。实测（App 内端口探测）：
+设备端安装按下列顺序自动尝试。前提事实：iOS 17+ 的 RSD 端口 `49152` **只接受 TLS-PSK**，
+所以「明文直连 49152」不可能成功（发明文 HTTP 升级请求会被 RST）。
 
-| 端点 | 结果 |
-|---|---|
-| `127.0.0.1:62078`（经典 lockdownd） | 超时 |
-| `127.0.0.1:27015`（usbmuxd） | 超时 |
-| **`127.0.0.1:49152`（RSD）** | **可连接** |
+### 1. 免电脑通路（首选）：RemotePairing 隧道 + 用户态 TCP
 
-因此经典 lockdownd 方案已废弃，改为：
+配对记录由本 App 在**设备上自配对**生成（「设备配对」卡片，iOS 27+），**不需要电脑**：
 
 ```
-TcpStream(127.0.0.1:49152)
-  → RsdHandshake                     握手，拿到服务表（含各服务端口）
-  → com.apple.afc                    上传 IPA 到 /PublicStaging
-  → com.apple.mobile.installation_proxy   Install（ClientOptions.PackageType = Developer）
+RpPairingFile（自配对产物）
+  → RemotePairingClient::validate_pairing    与设备 RP 服务验证已有配对记录（不需要 PIN）
+  → client.encryption_key()                  取 TLS-PSK 密钥
+  → connect_tls_psk_tunnel_native(stream)    TLS-PSK + CDTunnel 握手 → 隧道
+  → Adapter::new(tunnel.into_inner())        隧道里是裸 IPv6 包 → 用户态 TCP 栈（jktcp）
+  → AdapterHandle::connect(serverRSDPort)    经隧道连 RSD 端口（端口由隧道握手直接给出）
+  → RsdHandshake → com.apple.afc 上传 /PublicStaging
+  → com.apple.mobile.installation_proxy      Install（PackageType = Developer）
 ```
 
-全部使用 [`idevice`](https://crates.io/crates/idevice)（MIT 许可）实现，**不涉及任何非商业许可代码**。进度由 installation_proxy 回传百分比，经 FFI 轮询上报 UI。
+- 设备端拿不到 TUN 权限，因此 TCP 在**用户态**实现（`jktcp`，随 `idevice` 的 `tunnel_tcp_stack` feature 启用）；
+- `idevice` 已为 `AdapterHandle` 实现 `RsdProvider`，因此**直接复用**了原有的 AFC + installation_proxy 安装例程；
+- 进度由 installation_proxy 回传百分比，经 FFI 轮询上报 UI。
 
-### 两条通路（运行时自动选择）
+### 2. 经典 lockdownd（回落）
 
-1. **RSD（CoreDevice）**：`49152` 上确实是明文 RSD 时走这条 —— 握手拿服务表 → AFC 上传 `/PublicStaging` → installation_proxy。
-2. **经典 lockdownd（回落）**：连 loopback VPN 暴露的本机 `62078`，用**配对文件**建立会话 → AFC 上传 → installation_proxy。
-   这是 SideStore + StosVPN 在设备端自装的同款路径，**必须有配对文件**（首页「输入」→ 配对文件；
-   `jitterbugpair` / `idevicepair` 生成的那种 **lockdownd 配对记录**，不是 RemotePairing 的配对文件）。
+连 loopback VPN 暴露的本机 `62078`，用**配对记录**建立会话后 AFC 上传 + installation_proxy。
+需要 **lockdownd 配对记录**（`jitterbugpair` / `idevicepair` 生成的那种），**不能**用 RemotePairing 的配对文件。
 
-开始安装时会先探测两种端点并写日志（`install: RSD 探测 …` / `install: lockdownd 探测 …`），
-按可用性自动选择；两条都失败时会把各自错误一并列出。
+### 诊断日志
 
-> 判读要点：`127.0.0.1:62078` 直接连会返回 `Operation not permitted`（沙盒拒绝直连回环的 lockdownd），
-> 要走 loopback VPN 的对端地址（utun 的 `ifa_dstaddr`，常见 `10.7.0.1`）——环境自检已按对端地址探测。
+安装开始时会先探测端点并写日志，按结果选择通路：
+
+- `install: 端口探测 127.0.0.1:49152 TCP 可连接`
+- `rp: 配对记录验证通过` / `rp: 隧道已建立 —— 本端 fdxx::1 / 设备侧 fdxx::2 / RSD 端口 N`
+- `rp: RSD 握手成功（…，服务 N 个）` → 随后是上传与安装
+- 失败时：`install: 免电脑通路失败（…）：…`，并继续尝试下一条通路
+
+> 判读要点：`127.0.0.1:62078` 直连会返回 `Operation not permitted`（沙盒拒绝直连回环的 lockdownd），
+> 经典通路要走 loopback VPN 的对端地址（utun 的 `ifa_dstaddr`，常见 `10.7.0.1`）——环境自检已按对端地址探测。
 
 > 注意：安装是 **Developer 安装**，设备需已开启**开发者模式**（设置 → 隐私与安全性 → 开发者模式）。
 

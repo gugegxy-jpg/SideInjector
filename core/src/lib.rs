@@ -175,12 +175,17 @@ pub extern "C" fn si_zip_ipa(dir: *const c_char, out: *const c_char) -> c_int {
 }
 
 #[no_mangle]
-pub extern "C" fn si_install_ipa(ipa: *const c_char) -> c_int {
+pub extern "C" fn si_install_ipa(ipa: *const c_char, pairing: *const c_char) -> c_int {
     let Some(ipa) = to_str(ipa) else {
         log_msg("si_install_ipa: null path");
         return -1;
     };
-    match install::install_ipa(std::path::Path::new(&ipa)) {
+    // 配对文件可选：经典通路（lockdownd + 配对记录）需要它，RSD 通路不需要。
+    let pairing = to_str(pairing);
+    match install::install_ipa(
+        std::path::Path::new(&ipa),
+        pairing.as_deref().map(std::path::Path::new),
+    ) {
         Ok(_) => 0,
         Err(_) => -1, // 详细错误已由 install 模块按错误链写入日志
     }

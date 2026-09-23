@@ -43,6 +43,10 @@ func withTimeout<T>(seconds: Double, _ body: @escaping () async throws -> T) asy
 ///   本文件只负责候选枚举、超时控制与错误提示。
 enum TunnelNet {
     /// 本机所有 IPv4 地址（含接口名）。
+    ///
+    /// 注意：utun 这类**点到点**接口，`ifa_addr` 是「本端」地址（如 10.7.0.0），
+    /// 而 loopback VPN 真正暴露服务的**对端**在 `ifa_dstaddr`（常见 10.7.0.1）。
+    /// 之前只用 ifa_addr，环境自检一直在探 10.7.0.0（网络地址），所以全部超时。
     static func allIPv4() -> [(name: String, ip: String)] {
         var out: [(name: String, ip: String)] = []
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
@@ -51,12 +55,23 @@ enum TunnelNet {
             var ptr: UnsafeMutablePointer<ifaddrs>? = first
             while let cur = ptr {
                 let entry = cur.pointee
+                let name = String(cString: entry.ifa_name)
                 if let sa = entry.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) {
-                    let name = String(cString: entry.ifa_name)
                     var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                     if getnameinfo(sa, socklen_t(sa.pointee.sa_len),
                                    &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
                         out.append((name, String(cString: buf)))
+                    }
+                }
+                // 点到点接口的对端地址：loopback VPN 的服务出口就在这里。
+                if let dst = entry.ifa_dstaddr, dst.pointee.sa_family == UInt8(AF_INET) {
+                    var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    if getnameinfo(dst, socklen_t(dst.pointee.sa_len),
+                                   &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                        let ip = String(cString: buf)
+                        if ip != "0.0.0.0" && !out.contains(where: { $0.ip == ip }) {
+                            out.append((name + "·对端", ip))
+                        }
                     }
                 }
                 ptr = entry.ifa_next
@@ -165,8 +180,12 @@ final class InstallEngine {
 
         final class InstallState { var done = false; var rc: Int32 = -1 }
         let state = InstallState()
+        // 配对文件：经典通路（lockdownd + 配对记录）必须用它建立会话；
+        // 优先用流程里选中的，其次用设备自配对（iOS 27）产出的那份。
+        let pairingPath = pairingURL?.path ?? PairingController.shared.pairingFilePath
+        LogStore.shared.append("install: 配对文件 \(pairingPath ?? "未提供（经典通路会失败）")")
         DispatchQueue.global(qos: .userInitiated).async {
-            let rc = RustBridge.shared.install(ipa: ipaPath)
+            let rc = RustBridge.shared.install(ipa: ipaPath, pairing: pairingPath)
             DispatchQueue.main.async {
                 state.rc = rc
                 state.done = true

@@ -93,6 +93,19 @@ TcpStream(127.0.0.1:49152)
 
 全部使用 [`idevice`](https://crates.io/crates/idevice)（MIT 许可）实现，**不涉及任何非商业许可代码**。进度由 installation_proxy 回传百分比，经 FFI 轮询上报 UI。
 
+### 两条通路（运行时自动选择）
+
+1. **RSD（CoreDevice）**：`49152` 上确实是明文 RSD 时走这条 —— 握手拿服务表 → AFC 上传 `/PublicStaging` → installation_proxy。
+2. **经典 lockdownd（回落）**：连 loopback VPN 暴露的本机 `62078`，用**配对文件**建立会话 → AFC 上传 → installation_proxy。
+   这是 SideStore + StosVPN 在设备端自装的同款路径，**必须有配对文件**（首页「输入」→ 配对文件；
+   `jitterbugpair` / `idevicepair` 生成的那种 **lockdownd 配对记录**，不是 RemotePairing 的配对文件）。
+
+开始安装时会先探测两种端点并写日志（`install: RSD 探测 …` / `install: lockdownd 探测 …`），
+按可用性自动选择；两条都失败时会把各自错误一并列出。
+
+> 判读要点：`127.0.0.1:62078` 直接连会返回 `Operation not permitted`（沙盒拒绝直连回环的 lockdownd），
+> 要走 loopback VPN 的对端地址（utun 的 `ifa_dstaddr`，常见 `10.7.0.1`）——环境自检已按对端地址探测。
+
 > 注意：安装是 **Developer 安装**，设备需已开启**开发者模式**（设置 → 隐私与安全性 → 开发者模式）。
 
 ---

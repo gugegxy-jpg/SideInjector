@@ -46,12 +46,18 @@ fn set_percent(v: i32) {
 ///
 /// 这是阻塞调用（内部自建 tokio 运行时），由 Swift 侧放到后台线程执行，
 /// 进度通过 [`install_percent`] 轮询。
-pub fn install_ipa(ipa: &Path) -> Result<()> {
+pub fn install_ipa(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
     if !ipa.exists() {
         bail!("待安装的 IPA 不存在：{}", ipa.display());
     }
     set_percent(0);
-    log_msg(&format!("install: 连接本机 RSD 127.0.0.1:{RSD_PORT}"));
+    log_msg(&format!(
+        "install: 待安装 {}；配对文件：{}",
+        ipa.display(),
+        pairing
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "未提供".to_string())
+    ));
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -59,7 +65,8 @@ pub fn install_ipa(ipa: &Path) -> Result<()> {
         .context("创建 tokio 运行时失败")?;
 
     let ipa = ipa.to_path_buf();
-    let result = rt.block_on(async move { install_async(&ipa).await });
+    let pairing = pairing.map(|p| p.to_path_buf());
+    let result = rt.block_on(async move { install_async(&ipa, pairing.as_deref()).await });
     match result {
         Ok(()) => {
             set_percent(100);
@@ -74,43 +81,82 @@ pub fn install_ipa(ipa: &Path) -> Result<()> {
     }
 }
 
-async fn install_async(ipa: &Path) -> Result<()> {
-    // 先做原始探测再握手。原因：`RsdHandshake` 内部第一步就是 HTTP 升级，
-    // 一旦对端不是 remoted（例如 loopback VPN 只转发特定端口、或那个端口不是 RSD），
-    // 只会得到一句 "Connection reset by peer"，看不出对端到底是什么。
-    // 这里直接发标准升级请求并打印真实响应，同时多试几个 loopback VPN 常用地址。
-    let mut rsd_host = Ipv4Addr::LOCALHOST;
-    let mut rsd_ok = false;
-    let mut notes: Vec<String> = Vec::new();
+async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
+    // 先探测再动手。原因（实测）：
+    //   - 设备自连 49152，TCP 能连上，但发 RSD 升级请求后被 RST → 对端不是明文 remoted；
+    //   - 127.0.0.1:62078 直接返回 EPERM（沙盒拒绝直连回环的 lockdownd），
+    //     但 loopback VPN 的对端地址（10.7.0.1）上另有出口。
+    // 所以这里分别探「哪个地址是 RSD」与「哪个地址的 lockdownd 能应答」，再按可用性选通路。
+    let mut rsd_host: Option<Ipv4Addr> = None;
     for host in probe_hosts() {
         let (ok, note) = probe_endpoint(host, RSD_PORT, true).await;
         log_msg(&format!("install: RSD 探测 {note}"));
-        notes.push(note);
-        if ok && !rsd_ok {
-            rsd_host = host;
-            rsd_ok = true;
+        if ok && rsd_host.is_none() {
+            rsd_host = Some(host);
         }
     }
-    // 经典通路顺手探一下（只探回环），用于判断「该走哪条协议」而不是反复试错。
-    for port in [62078u16, 27015u16] {
-        let (_, note) = probe_endpoint(Ipv4Addr::LOCALHOST, port, false).await;
-        log_msg(&format!("install: 端口探测 {note}"));
+
+    let mut lockdown_host: Option<Ipv4Addr> = None;
+    for host in probe_hosts() {
+        let (ok, note) = probe_lockdown(host).await;
+        log_msg(&format!("install: lockdownd 探测 {note}"));
+        if ok && lockdown_host.is_none() {
+            lockdown_host = Some(host);
+        }
     }
-    if !rsd_ok {
+
+    let mut errors: Vec<String> = Vec::new();
+
+    // 通路 1：RSD（iOS 17+ 正统链路，需对端确实是明文 remoted）。
+    if let Some(host) = rsd_host {
+        log_msg(&format!("install: 尝试 RSD 通路（{host}:{RSD_PORT}）"));
+        match rsd_install(ipa, host).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                log_msg(&format!("install: RSD 通路失败，转经典通路：{e:#}"));
+                errors.push(format!("RSD（{host}）：{e:#}"));
+            }
+        }
+    }
+
+    // 通路 2：经典 lockdownd（loopback VPN 暴露本机 lockdownd + 配对记录）。
+    // 这是 SideStore + StosVPN 在设备端自装的同款路径，不需要 RSD。
+    if let Some(host) = lockdown_host {
+        let Some(pairing) = pairing else {
+            bail!(
+                "lockdownd（{host}:62078）可应答，但没有配对文件：\n\
+                 经典通路必须用配对记录建立会话。请在首页「输入」里选择配对文件\
+                 （PC 上用 jitterbugpair / idevicepair 生成的那种）。"
+            );
+        };
+        log_msg(&format!(
+            "install: 尝试经典通路（lockdownd {host}:62078 + 配对文件 {}）",
+            pairing.display()
+        ));
+        match classic_install(ipa, pairing, host).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                log_msg(&format!("install: 经典通路失败：{e:#}"));
+                errors.push(format!("经典（{host}）：{e:#}"));
+            }
+        }
+    }
+
+    if errors.is_empty() {
         bail!(
-            "本机找不到可用的 RSD 端点（49152）。\n\
-             探测结果：{}\n\
-             若 49152 能连上但对升级请求不应答/直接断开，说明它不是 remoted \
-             （常见于 loopback VPN 只转发特定端口）。请把上面 install: 开头的几行日志发出来，\
-             并确认 loopback VPN（StosVPN / SideStore 描述文件）已开启。",
-            notes.join("；")
+            "没有找到可用的安装通路：49152 上不是明文 RSD，且候选地址的 lockdownd(62078) 都无应答。\n\
+             请确认 loopback VPN（StosVPN / SideStore 的描述文件）已开启并保持连接，\
+             并提供配对文件（首页「输入」→ 配对文件）。把 install: 开头的日志发出来可精确定位。"
         );
     }
-    log_msg(&format!("install: 使用 RSD 端点 {rsd_host}:{RSD_PORT}"));
+    bail!("两条通路都失败：\n - {}", errors.join("\n - "));
+}
 
-    let stream = TcpStream::connect((rsd_host, RSD_PORT))
+/// 通路 1：RSD —— 握手拿到服务表后，用 AFC 上传到 /PublicStaging，再走 installation_proxy 安装。
+async fn rsd_install(ipa: &Path, host: Ipv4Addr) -> Result<()> {
+    let stream = TcpStream::connect((host, RSD_PORT))
         .await
-        .with_context(|| format!("连接 RSD 失败（{rsd_host}:{RSD_PORT}）"))?;
+        .with_context(|| format!("连接 RSD 失败（{host}:{RSD_PORT}）"))?;
     let mut handshake = RsdHandshake::new(stream).await.context("RSD 握手失败")?;
     log_msg(&format!(
         "install: RSD 握手成功（uuid={}，协议 v{}，服务 {} 个）",
@@ -145,19 +191,14 @@ async fn install_async(ipa: &Path) -> Result<()> {
     );
 
     log_msg("install: 上传到 /PublicStaging 并安装（AFC + installation_proxy）…");
-    let mut rsd = IpAddr::V4(rsd_host);
+    let mut rsd = IpAddr::V4(host);
     install_package_with_callback_rsd(
         &mut rsd,
         &mut handshake,
         ipa,
         Some(plist::Value::Dictionary(opts)),
         |(percent, _)| async move {
-            let p = percent as i32;
-            let prev = INSTALL_PERCENT.swap(p, Ordering::Relaxed);
-            // 每跨过 5% 记一条，避免刷屏。
-            if p / 5 != prev / 5 {
-                log_msg(&format!("install[进度]: {p}%"));
-            }
+            report_percent(percent as i32);
         },
         (),
     )
@@ -166,6 +207,104 @@ async fn install_async(ipa: &Path) -> Result<()> {
 
     Ok(())
 }
+
+/// 通路 2：经典 lockdownd —— 直连 62078 + 配对记录建立会话，
+/// 之后由 `idevice` 的安装例程做「AFC 上传到 PublicStaging → installation_proxy Install」。
+///
+/// 注意：这里的配对文件必须是 **lockdownd 配对记录**（DeviceCertificate / HostPrivateKey …），
+/// 即 jitterbugpair / idevicepair 生成的那种；RemotePairing 的配对文件格式不同。
+async fn classic_install(ipa: &Path, pairing_path: &Path, host: Ipv4Addr) -> Result<()> {
+    use idevice::pairing_file::PairingFile;
+    use idevice::provider::TcpProvider;
+    use idevice::utils::installation::install_package_with_callback;
+
+    let pairing = PairingFile::read_from_file(pairing_path).map_err(|e| {
+        anyhow::anyhow!(
+            "读取配对文件失败（{}）：{e:?}\n\
+             经典通路需要 lockdownd 配对记录（jitterbugpair / idevicepair 生成），\
+             请确认所选文件类型正确",
+            pairing_path.display()
+        )
+    })?;
+
+    let provider = TcpProvider {
+        addr: IpAddr::V4(host),
+        scope_id: None,
+        pairing_file: pairing,
+        label: "SideInjector".to_string(),
+    };
+
+    let mut opts = plist::Dictionary::new();
+    opts.insert(
+        "PackageType".to_string(),
+        plist::Value::String("Developer".to_string()),
+    );
+
+    install_package_with_callback(
+        &provider,
+        ipa,
+        Some(plist::Value::Dictionary(opts)),
+        |(percent, _)| async move {
+            report_percent(percent as i32);
+        },
+        (),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("AFC 上传 / installation_proxy 安装失败：{e:?}"))?;
+
+    Ok(())
+}
+
+/// 统一记录进度（每跨过 5% 记一条，避免刷屏）。
+fn report_percent(p: i32) {
+    let prev = INSTALL_PERCENT.swap(p, Ordering::Relaxed);
+    if p / 5 != prev / 5 {
+        log_msg(&format!("install[进度]: {p}%"));
+    }
+}
+
+/// 探测 lockdownd：连接 + 发 QueryType（XML plist），有应答即认为可用。
+///
+/// 区分三种情况很重要：连接超时（地址/路由不对）、`Operation not permitted`（沙盒拒绝直连
+/// 回环的 62078，但对 loopback VPN 的对端地址通常放行）、以及正常应答。
+async fn probe_lockdown(host: Ipv4Addr) -> (bool, String) {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const LOCKDOWN_PORT: u16 = 62078;
+    const QUERY_TYPE: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Request</key><string>QueryType</string></dict></plist>"#;
+
+    let addr = std::net::SocketAddr::from((host, LOCKDOWN_PORT));
+    let mut stream =
+        match tokio::time::timeout(Duration::from_millis(1500), TcpStream::connect(addr)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return (false, format!("{host}:{LOCKDOWN_PORT} 连接失败：{e}")),
+            Err(_) => return (false, format!("{host}:{LOCKDOWN_PORT} 连接超时（1.5s）")),
+        };
+    if let Err(e) = stream.write_all(QUERY_TYPE).await {
+        return (
+            false,
+            format!("{host}:{LOCKDOWN_PORT} 已连接，但发送 QueryType 失败：{e}"),
+        );
+    }
+    let mut buf = vec![0u8; 512];
+    match tokio::time::timeout(Duration::from_millis(1500), stream.read(&mut buf)).await {
+        Ok(Ok(n)) if n > 0 => {
+            let text = String::from_utf8_lossy(&buf[..n]).replace(['\r', '\n'], " ");
+            let head: String = text.chars().take(120).collect();
+            (true, format!("{host}:{LOCKDOWN_PORT} 应答 {n} 字节：{head}"))
+        }
+        Ok(Ok(_)) => (false, format!("{host}:{LOCKDOWN_PORT} 已连接但应答为空")),
+        Ok(Err(e)) => (false, format!("{host}:{LOCKDOWN_PORT} 读取失败：{e}")),
+        Err(_) => (
+            false,
+            format!("{host}:{LOCKDOWN_PORT} 已连接但 1.5s 内无应答"),
+        ),
+    }
+}
+
 
 /// loopback VPN 把设备自身服务暴露出来的常见地址（回环 + StosVPN 常用的 10.7.0.x）。
 fn probe_hosts() -> Vec<Ipv4Addr> {

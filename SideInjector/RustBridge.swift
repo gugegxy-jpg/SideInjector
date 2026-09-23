@@ -20,7 +20,7 @@ func si_zip_ipa(_ dir: UnsafePointer<CChar>, _ out: UnsafePointer<CChar>) -> Int
 func si_set_bundle_info(_ app: UnsafePointer<CChar>, _ bundleId: UnsafePointer<CChar>?, _ displayName: UnsafePointer<CChar>?) -> Int32
 
 @_silgen_name("si_install_ipa")
-func si_install_ipa(_ ipa: UnsafePointer<CChar>) -> Int32
+func si_install_ipa(_ ipa: UnsafePointer<CChar>, _ pairing: UnsafePointer<CChar>?) -> Int32
 
 @_silgen_name("si_install_progress")
 func si_install_progress() -> Int32
@@ -109,8 +109,14 @@ final class RustBridge {
         }
     }
 
-    func install(ipa: String) -> Int32 {
-        ipa.withCString { i in si_install_ipa(i) }
+    /// 安装到设备。`pairing` 为配对文件路径（经典通路需要；RSD 通路可传 nil）。
+    func install(ipa: String, pairing: String?) -> Int32 {
+        ipa.withCString { i in
+            if let pairing {
+                return pairing.withCString { p in si_install_ipa(i, p) }
+            }
+            return si_install_ipa(i, nil)
+        }
     }
 
     /// 安装进度（-1=未开始/失败，0…100）。设备端安装由 Rust 走 RSD 链路，进度靠轮询。

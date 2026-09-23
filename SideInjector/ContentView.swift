@@ -264,7 +264,7 @@ struct ContentView: View {
                     .textFieldStyle(.plain)
                     .fieldBackground()
                 Divider()
-                FileRow(title: "配对文件 (iOS 18–26 需要)", url: $model.pairingFile)
+                FileRow(title: "配对文件 (经典通路/手动安装需要)", url: $model.pairingFile)
             }
         }
     }

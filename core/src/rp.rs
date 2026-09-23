@@ -134,14 +134,36 @@ pub async fn install(
         handshake.protocol_version,
         handshake.services.len()
     ));
-    // 不同 iOS 版本经不同隧道暴露的服务集合不同 —— 先把服务名全部打出来（每行 6 个），
-    // 以便照着「实际可用」的服务选上传/安装通道，而不是死认经典名字。
+    // 先把这条隧道到底是什么打出来：RSD 的 uuid / properties / 全部服务名。
+    // iOS 上 `create_tcp_listener` 可能给出「受信」或「未受信」两类隧道，
+    // 未受信隧道只暴露一小撮服务（通常不含 AFC / installation_proxy）。
+    let mut props: Vec<String> = handshake.properties.keys().cloned().collect();
+    props.sort();
+    log_msg(&format!(
+        "rp: RSD uuid={}，协议 v{}，properties：{}",
+        handshake.uuid,
+        handshake.protocol_version,
+        props.join("、")
+    ));
     let mut names: Vec<String> = handshake.services.keys().cloned().collect();
     names.sort();
     log_msg(&format!("rp: RSD 服务共 {} 个：", names.len()));
     for chunk in names.chunks(6) {
         log_msg(&format!("rp:   {}", chunk.join("、")));
     }
+    let tunnel_svcs: Vec<&str> = names
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|n| n.contains("tunnelservice"))
+        .collect();
+    log_msg(&format!(
+        "rp: 隧道服务条目（判断受信/未受信）：{}",
+        if tunnel_svcs.is_empty() {
+            "无".to_string()
+        } else {
+            tunnel_svcs.join("、")
+        }
+    ));
     for name in ["com.apple.afc", "com.apple.mobile.installation_proxy"] {
         log_msg(&format!(
             "rp: 服务 {name} {}",

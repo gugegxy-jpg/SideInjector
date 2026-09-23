@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Network
 
 /// 设备端自配对控制器：启动 Rust 配对主机 + Bonjour 广播 + PIN 展示 + 完成检测。
 /// 参考 SideInstaller 的 PairingController / PairingManager。
@@ -13,6 +14,7 @@ final class PairingController: ObservableObject {
     @Published var isPairing = false
 
     private var netService: NetService?
+    private var permissionProbe: NWBrowser?
     private var pollTask: Task<Void, Never>?
     private let pairingPath: String
 
@@ -33,12 +35,14 @@ final class PairingController: ObservableObject {
         isPairing = true
         pin = nil
         pairedDeviceName = nil
-        setStatus("请求本地网络权限…")
+        setStatus("正在请求「本地网络」权限，请点「允许」弹窗…")
+        // 主动触发本地网络授权弹窗（NetService.publish 在部分 iOS 版本上不一定弹窗）
+        requestLocalNetworkPermission()
 
         let rc = RustBridge.shared.pairingStart(outPath: pairingPath)
         if rc != 0 {
             setStatus("启动配对失败")
-            isPairing = false
+            stopPairing()
             return
         }
 
@@ -75,7 +79,32 @@ final class PairingController: ObservableObject {
         pollTask?.cancel()
         pollTask = nil
         stopAdvertising()
+        permissionProbe?.cancel()
+        permissionProbe = nil
         isPairing = false
+    }
+
+    /// 主动触发 iOS 的「本地网络」授权弹窗。
+    /// 系统只在 App 首次进行本地网络 I/O（Bonjour 浏览/广播）时弹窗；
+    /// NetService.publish() 在某些 iOS 版本上不一定可靠，这里用 NWBrowser 显式浏览本机
+    /// Bonjour 服务来确保弹窗出现。浏览本身不影响配对，仅用于触发授权。
+    private func requestLocalNetworkPermission() {
+        permissionProbe?.cancel()
+        let browser = NWBrowser(
+            for: .bonjour(type: "_remotepairing-pairable-host._tcp.", domain: "local."),
+            using: NWParameters()
+        )
+        browser.stateUpdateHandler = { [weak self] state in
+            if case .failed = state {
+                // 多为用户曾在「设置」中拒绝本地网络权限：系统不再弹窗，
+                // 需引导到 设置 → SideInjector → 本地网络 打开后重试。
+                Task { @MainActor in
+                    self?.status = "本地网络权限被拒绝：请到 设置 → SideInjector → 本地网络 打开，再重试配对"
+                }
+            }
+        }
+        browser.start(queue: .main)
+        permissionProbe = browser
     }
 
     private func advertise(port: Int32) {
@@ -105,6 +134,8 @@ final class PairingController: ObservableObject {
     private func finishSuccess(deviceName: String?) {
         DispatchQueue.main.async {
             self.stopAdvertising()
+            self.permissionProbe?.cancel()
+            self.permissionProbe = nil
             self.pairedDeviceName = deviceName
             self.pairingFilePath = self.pairingPath
             self.pin = nil
@@ -116,6 +147,8 @@ final class PairingController: ObservableObject {
     private func finishError(_ msg: String?) {
         DispatchQueue.main.async {
             self.stopAdvertising()
+            self.permissionProbe?.cancel()
+            self.permissionProbe = nil
             self.pin = nil
             self.status = "配对失败：\(msg ?? "未知错误")"
             self.isPairing = false

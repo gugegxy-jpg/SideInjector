@@ -98,11 +98,14 @@ final class PairingController: ObservableObject {
         )
         browser.stateUpdateHandler = { [weak self] state in
             if case let .failed(error) = state {
-                // 失败原因可能是：用户曾在「设置」中拒绝本地网络权限，或当前未连接 Wi-Fi。
-                // 系统不会再弹窗，需引导到 设置 → SideInjector → 本地网络 检查。
+                // -65555（kDNSServiceErr_NoAuth）表示本地网络权限未授予：
+                // iOS 在缺少 NSLocalNetworkUsageDescription / NSBonjourServices 时
+                // 会直接拒绝且「不弹窗」，因此务必确认打包用的 Info.plist 含这两个键。
                 Task { @MainActor in
                     let ns = error as NSError
-                    if ns.domain == "NWErrorDomain" && ns.code == 1 {
+                    if ns.code == -65555 {
+                        self?.status = "本地网络未授权（NoAuth）：请到 设置 → 隐私与安全性 → 本地网络 打开 SideInjector；若列表里没有本 App，说明当前 IPA 的 Info.plist 缺少 NSLocalNetworkUsageDescription / NSBonjourServices，请删除后重装最新构建"
+                    } else if ns.domain == "NWErrorDomain" && ns.code == 1 {
                         self?.status = "本地网络权限被拒绝：请到 设置 → SideInjector → 本地网络 打开，再重试配对"
                     } else {
                         self?.status = "本地网络请求失败（请确认已连接 Wi-Fi）：\(error.localizedDescription)"

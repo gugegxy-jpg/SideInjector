@@ -13,8 +13,13 @@ targets:
       - path: SideInjector
         excludes:
           - rcodesign
-    info:
-      path: SideInjector/Info.plist
+    # 注意：这里绝对不能写 `info:`。XcodeGen 只要看到 info.path，每次 generate
+    # 都会用 info.properties（此处为空）重写该文件，把下面手写 Info.plist 里的
+    # 自定义键全部清空，导致：
+    #   - UILaunchStoryboardName 丢失 → 无启动屏 → iPhone 被按兼容模式渲染 → 上下黑块
+    #   - NSLocalNetworkUsageDescription / NSBonjourServices 丢失
+    #     → 本地网络不弹授权框，且 Bonjour 直接报 -65555 (kDNSServiceErr_NoAuth)
+    # 只用 INFOPLIST_FILE 指向手写文件即可。
     dependencies:
       - framework: core/build/sideinjector_core.xcframework
     settings:

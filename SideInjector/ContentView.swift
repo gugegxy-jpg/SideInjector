@@ -248,10 +248,31 @@ struct ContentView: View {
     private var logCard: some View {
         PanelCard {
             VStack(alignment: .leading, spacing: 8) {
-                sectionTitle("日志", systemImage: "doc.plaintext")
+                HStack(spacing: 8) {
+                    sectionTitle("日志", systemImage: "doc.plaintext")
+                    Spacer(minLength: 8)
+                    Button {
+                        UIPasteboard.general.string = log.text
+                    } label: {
+                        Label("复制", systemImage: "doc.on.doc")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(log.text.isEmpty)
+                    Button {
+                        log.clear()
+                    } label: {
+                        Label("清空", systemImage: "trash")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(log.text.isEmpty)
+                }
                 ScrollView {
                     Text(log.text)
                         .font(.system(.caption, design: .monospaced))
+                        // 长按可直接选择/复制任意片段
+                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(minHeight: 160, maxHeight: 300)

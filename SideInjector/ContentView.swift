@@ -122,6 +122,16 @@ struct ContentView: View {
                 TextField("注入后文件名", text: $model.dylibName)
                     .textFieldStyle(.plain)
                     .fieldBackground()
+                Divider()
+                TextField("Bundle ID（留空不改）", text: $model.bundleId)
+                    .textFieldStyle(.plain)
+                    .fieldBackground()
+                    .autocapitalization(.none)
+                    .disableAutocorrection(true)
+                Divider()
+                TextField("显示名称（留空不改）", text: $model.displayName)
+                    .textFieldStyle(.plain)
+                    .fieldBackground()
             }
         }
     }

@@ -16,6 +16,10 @@ final class Model: ObservableObject {
     @Published var dylib: URL?
     @Published var dylibName: String = "inject.dylib"
 
+    // 可选：改写 Bundle 信息（留空则不修改）
+    @Published var bundleId: String = ""
+    @Published var displayName: String = ""
+
     // 状态
     @Published var status: String = "空闲"
     @Published var busy: Bool = false
@@ -62,6 +66,9 @@ final class Model: ObservableObject {
 
         // 在主线程先读一次隧道状态，避免在后台任务里访问 @Published 造成数据竞争
         let installViaTunnel = self.tunnelStatus?.ok == true
+        // 同样先捕获 Bundle 信息，避免后台任务访问 @Published
+        let bundleId = self.bundleId
+        let displayName = self.displayName
 
         Task.detached { [weak self] in
             guard let self else { return }
@@ -94,6 +101,14 @@ final class Model: ObservableObject {
             } else {
                 self.setStage(1, "未选择 dylib，跳过注入")
                 LogStore.shared.append("run: 未选择 dylib，直接进入签名")
+            }
+
+            // 可选：修改 Bundle ID / 显示名（两者皆空则跳过）
+            if !bundleId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.setStage(2, "修改 Bundle 信息…")
+                code = r.setBundleInfo(app: app.path, bundleId: bundleId, displayName: displayName)
+                if code != 0 { self.finish("修改 Bundle 信息失败"); self.stopAccess(&accessed); return }
             }
 
             self.setStage(2, "重签…")

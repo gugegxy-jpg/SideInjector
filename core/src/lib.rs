@@ -14,6 +14,7 @@ mod sign;
 mod install;
 mod ziputil;
 mod pair;
+mod bundle;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -79,6 +80,35 @@ pub extern "C" fn si_inject_dylib(
         Ok(_) => 0,
         Err(e) => {
             log_msg(&format!("inject error: {e}"));
+            -1
+        }
+    }
+}
+
+/// 修改 .app 的 Info.plist：Bundle ID 与显示名（两者均为空则不做任何修改）。
+#[no_mangle]
+pub extern "C" fn si_set_bundle_info(
+    app: *const c_char,
+    bundle_id: *const c_char,
+    display_name: *const c_char,
+) -> c_int {
+    let app = match to_str(app) {
+        Some(s) => s,
+        None => {
+            log_msg("si_set_bundle_info: null app");
+            return -1;
+        }
+    };
+    let bundle_id = to_str(bundle_id);
+    let display_name = to_str(display_name);
+    match bundle::set_bundle_info(
+        std::path::Path::new(&app),
+        bundle_id.as_deref(),
+        display_name.as_deref(),
+    ) {
+        Ok(_) => 0,
+        Err(e) => {
+            log_msg(&format!("set_bundle_info error: {e}"));
             -1
         }
     }

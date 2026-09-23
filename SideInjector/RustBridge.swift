@@ -16,6 +16,9 @@ func si_sign_bundle(_ app: UnsafePointer<CChar>, _ p12: UnsafePointer<CChar>?, _
 @_silgen_name("si_zip_ipa")
 func si_zip_ipa(_ dir: UnsafePointer<CChar>, _ out: UnsafePointer<CChar>) -> Int32
 
+@_silgen_name("si_set_bundle_info")
+func si_set_bundle_info(_ app: UnsafePointer<CChar>, _ bundleId: UnsafePointer<CChar>?, _ displayName: UnsafePointer<CChar>?) -> Int32
+
 @_silgen_name("si_install_ipa")
 func si_install_ipa(_ ipa: UnsafePointer<CChar>) -> Int32
 
@@ -82,6 +85,14 @@ final class RustBridge {
 
     func zip(dir: String, out: String) -> Int32 {
         dir.withCString { d in out.withCString { o in si_zip_ipa(d, o) } }
+    }
+
+    func setBundleInfo(app: String, bundleId: String, displayName: String) -> Int32 {
+        app.withCString { a in
+            bundleId.withCString { b in
+                displayName.withCString { d in si_set_bundle_info(a, b, d) }
+            }
+        }
     }
 
     func install(ipa: String) -> Int32 {

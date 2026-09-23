@@ -185,16 +185,69 @@ project.yml                XcodeGen 规格
 
 ---
 
-## 许可证与依赖
+## 代码出处与致谢
 
-本仓库代码以 **MIT** 提供。
+本项目**参考/借鉴了以下开源项目**，特此注明出处。若你是相关作者、认为署名方式不妥，请开 Issue，我会立即更正。
 
-运行时/编译期依赖（均为宽松或弱著佐权许可）：
+### 1. FrizzleM/SideInstaller —— 参考实现（自有许可）
 
-| 依赖 | 许可 | 用途 |
+<https://github.com/FrizzleM/SideInstaller>
+
+设备端配对 / 安装的**整体思路、模块划分与 UI 风格**参考自该项目。对应关系：
+
+| 本仓库 | 参考其 | 借鉴程度 |
 |---|---|---|
-| [`apple-codesign`](https://crates.io/crates/apple-codesign) | MPL-2.0 | 进程内代码签名 |
-| [`idevice`](https://crates.io/crates/idevice) | MIT | 设备自配对 + RSD/AFC/installation_proxy |
-| `zip` / `plist` / `log` / `tokio` / `serde` / `anyhow` | MIT / Apache-2.0 | 基础设施 |
+| `core/src/pair.rs` | `rust-core/src/pairing.rs` | 配对流程组织、机型标识处理（协议实现来自 `idevice`） |
+| `SideInjector/PairingController.swift` | `PairingController` / `PairingManager` | Bonjour 广播、PIN、状态轮询的组织方式 |
+| `SideInjector/InstallEngine.swift` | 安装端点候选与回环探测策略 | 候选地址枚举、错误提示用语 |
+| `SideInjector/Theme.swift` | `Theme.swift` | 配色、卡片风格（风格参照，非逐行复制） |
+| `SideInjector/ContentView.swift` | 首页 UI / 交互 | 全宽自适应、四态步骤图标、按钮内显示当前阶段、仅安装时显示进度条 |
 
-> 早期版本曾计划接入 [SideInstaller](https://github.com/FrizzleM/SideInstaller) 的 `rust-core`（其源码非商业可用、禁止再分发官方构建）。现已改为使用 MIT 许可的 `idevice` crate 自行实现同一条链路，**不再依赖该仓库的代码**。
+**必须遵守的许可条款**（*SideInstaller License*，Copyright © 2026 FrizzleM；属自定义许可，非标准开源协议）：
+
+- 允许使用、复制、修改，并**允许以源码形式再分发**——须附带该许可证与版权声明，且**标明所做修改**；
+- **禁止商业使用**（Commercial Use 需另行书面授权）；
+- **禁止再分发其官方构建 / IPA**（重新打包、重签名、镜像等均不允许）；
+- **必须署名**：须标注 “**SideInstaller by FrizzleM**” 并链接官方仓库（本条已由本 README 满足）。
+
+> 因此：上表所列**参考其写成的部分不适用 MIT**，并受“禁止商业使用”约束。若需商用，请先联系 FrizzleM 取得授权，或把这些部分替换为独立实现（`core/src/pair.rs` 与安装链路已建立在 MIT 许可的 `idevice` crate 之上，替换成本可控）。
+
+### 2. indygreg/apple-platform-rs —— `apple-codesign`（MPL-2.0，库依赖）
+
+<https://github.com/indygreg/apple-platform-rs>
+
+- `core/src/sign.rs` 以**库形式**链接 `apple-codesign`（0.27，`default-features = false`）完成重签。之所以不调用 `rcodesign` 命令行：iOS 禁止 App `fork/exec` 子进程；
+- `core/src/sign.rs` 里的**签名前结构诊断**，是阅读同仓库 `apple-bundles` 的 `DirectoryBundle` 实现后，按其 bundle 判定规则（是否 `shallow`、优先 `Resources/Info.plist`、嵌套 bundle 候选）写成的镜像检查；
+- `core/src/logbridge.rs` 把其 `log` 输出桥接到 App 日志，用于定位它**不带路径**的 IO 错误。
+
+MPL-2.0 为**文件级弱著佐权**：本项目未修改其源码（仅作依赖使用），保留其许可证与出处声明即可，自有源码不受其传染。
+
+### 3. jkcoxson/idevice（MIT，库依赖）
+
+<https://github.com/jkcoxson/idevice>（作者 Jackson Coxson）
+
+- `core/src/install.rs`：RSD 握手（`RsdHandshake`）、AFC 上传、`installation_proxy` 安装（`PackageType = Developer`）；
+- `core/src/pair.rs`：`remote_pairing::PairableHost` / `RpPairingFile` 等设备自配对协议实现。
+
+### 4. 其他依赖
+
+| crate | 许可 | 用途 |
+|---|---|---|
+| `zip` / `plist` / `log` / `tokio` / `serde_json` / `anyhow` | MIT / Apache-2.0 | 打包、plist、日志、异步、序列化 |
+
+### 5. 仅作为外部工具使用（未引入其代码）
+
+- **SideStore / AltStore**：用于把 SideInjector 本身侧载进设备；
+- **StosVPN / SideStore 的 loopback VPN 描述文件**：为设备端安装提供到本机 RSD 的回环通道。
+
+---
+
+## 许可证
+
+- **本仓库自有代码**：MIT；
+- **参考 SideInstaller 写成的部分**（见上表）：适用 *SideInstaller License* —— 允许以源码形式使用 / 修改 / 分发并须署名，**禁止商业使用**；
+- **第三方依赖**：`apple-codesign`（MPL-2.0）、`idevice`（MIT）、`zip` / `plist` / `log` / `tokio` / `serde_json` / `anyhow`（MIT 或 Apache-2.0）。
+
+署名声明：
+
+> 本项目包含参考 **SideInstaller by FrizzleM**（<https://github.com/FrizzleM/SideInstaller>）写成的实现。该部分按其 *SideInstaller License*（Copyright © 2026 FrizzleM）发布，**禁止商业使用**，且不得再分发其官方构建 / IPA。

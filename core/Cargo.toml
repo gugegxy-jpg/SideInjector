@@ -18,7 +18,8 @@ log = "0.4"
 # default-features=false 关掉 notarize，避免 aws-sdk-s3/app-store-connect 等重依赖拖累 iOS 交叉编译。
 apple-codesign = { version = "0.27", default-features = false }
 plist = "1"
-# 设备端自配对（Remote Pairing）+ 本机 lockdownd 安装，参考 SideInstaller 的 rust-core。
+# 设备端自配对（Remote Pairing）与安装链路的**协议实现**均来自此 crate（MIT）。
+# 配对流程的组织方式参考 FrizzleM/SideInstaller 的 rust-core/src/pairing.rs，见 README「代码出处与致谢」。
 # remote_pairing 用于起 PairableHost 自配对；tcp 启用 tokio/net（TcpListener）；
 # ring 启用 rustls（PairingFile 类型被 #[cfg(feature="rustls")] 门控，不启用则 idevice 自身编译不过）。
 # rsd/afc/installation_proxy：设备端安装走 CoreDevice/RSD 路径（iOS 17+ 本机 49152）。

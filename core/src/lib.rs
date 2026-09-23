@@ -1,11 +1,11 @@
 //! SideInjector Rust core —— 通过 FFI 暴露给 SwiftUI App 调用。
 //!
-//! 四大能力：
+//! 五大能力：
 //!   1. si_unzip_ipa  —— 解 IPA（zip）到目录
 //!   2. si_inject_dylib —— 往主二进制插入 LC_LOAD_DYLIB（用 constructor 自动执行的 dylib）
-//!   3. si_sign_bundle —— 用导入的开发证书重签整个 .app
+//!   3. si_sign_bundle —— 用导入的开发证书重签整个 .app（apple-codesign 库，见 sign.rs）
 //!   4. si_zip_ipa    —— 把 .app 目录重新打包成 IPA
-//!   5. si_install_ipa —— 设备端安装（依赖 SideInstaller rust-core 的 CoreDevice 传输，见 install.rs）
+//!   5. si_install_ipa —— 设备端安装（CoreDevice/RSD 链路，协议来自 idevice crate，见 install.rs）
 //!
 //! 所有函数返回 0 表示成功，-1 表示失败；失败原因通过日志回调吐出。
 

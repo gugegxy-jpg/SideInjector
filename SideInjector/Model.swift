@@ -48,6 +48,14 @@ final class Model: ObservableObject {
             status = "请先选择 IPA 文件"
             return
         }
+        guard certP12 != nil else {
+            status = "请先选择 P12 证书"
+            return
+        }
+        guard profile != nil else {
+            status = "请先选择 mobileprovision 描述文件"
+            return
+        }
         busy = true
         status = "开始处理…"
         stageIndex = -1
@@ -69,6 +77,12 @@ final class Model: ObservableObject {
         // 同样先捕获 Bundle 信息，避免后台任务访问 @Published
         let bundleId = self.bundleId
         let displayName = self.displayName
+        // 证书/描述文件/密码/dylib 也必须在主线程捕获，避免后台任务访问 @Published 造成数据竞争（可能读到空值）
+        let certP12Path = self.certP12?.path
+        let certPass = self.certPass
+        let profilePath = self.profile?.path
+        let dylibURL = self.dylib
+        let dylibName = self.dylibName
 
         Task.detached { [weak self] in
             guard let self else { return }
@@ -94,9 +108,9 @@ final class Model: ObservableObject {
             else { self.finish("未在 Payload 中找到 .app"); self.stopAccess(&accessed); return }
 
             // 注入 dylib 为可选项：未选择则跳过，直接进入签名 + 安装
-            if let dylib = self.dylib {
+            if let dylib = dylibURL {
                 self.setStage(1, "注入 dylib…")
-                code = r.inject(app: app.path, dylib: dylib.path, name: self.dylibName)
+                code = r.inject(app: app.path, dylib: dylib.path, name: dylibName)
                 if code != 0 { self.finish("注入 dylib 失败"); self.stopAccess(&accessed); return }
             } else {
                 self.setStage(1, "未选择 dylib，跳过注入")
@@ -112,8 +126,8 @@ final class Model: ObservableObject {
             }
 
             self.setStage(2, "重签…")
-            code = r.sign(app: app.path, p12: self.certP12?.path, pw: self.certPass,
-                          prov: self.profile?.path, team: "")
+            code = r.sign(app: app.path, p12: certP12Path, pw: certPass,
+                          prov: profilePath, team: "")
             if code != 0 { self.finish("重签失败（检查证书/描述文件/Team ID）"); self.stopAccess(&accessed); return }
 
             self.setStage(3, "打包 IPA…")

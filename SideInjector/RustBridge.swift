@@ -73,10 +73,21 @@ final class RustBridge {
 
     func sign(app: String, p12: String?, pw: String, prov: String?, team: String) -> Int32 {
         app.withCString { a in
-            (p12 ?? "").withCString { p in
-                pw.withCString { w in
-                    (prov ?? "").withCString { pr in
-                        team.withCString { t in si_sign_bundle(a, p, w, pr, t) }
+            pw.withCString { w in
+                team.withCString { t in
+                    // 空字符串视为未选择，传 NULL 让 Rust 给出明确的「缺少证书/描述文件」报错，
+                    // 而不是 fs::read("") 报出误导性的 “no such file or directory”。
+                    if let p = p12, !p.isEmpty {
+                        return p.withCString { pc in
+                            if let pr = prov, !pr.isEmpty {
+                                return pr.withCString { prc in si_sign_bundle(a, pc, w, prc, t) }
+                            }
+                            return si_sign_bundle(a, pc, w, nil, t)
+                        }
+                    } else if let pr = prov, !pr.isEmpty {
+                        return pr.withCString { prc in si_sign_bundle(a, nil, w, prc, t) }
+                    } else {
+                        return si_sign_bundle(a, nil, w, nil, t)
                     }
                 }
             }

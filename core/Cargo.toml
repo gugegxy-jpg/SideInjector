@@ -21,6 +21,7 @@ plist = "1"
 # 设备端自配对（Remote Pairing）+ 本机 lockdownd 安装，参考 SideInstaller 的 rust-core。
 # remote_pairing 用于起 PairableHost 自配对；tcp 启用 tokio/net（TcpListener）；
 # ring 启用 rustls（PairingFile 类型被 #[cfg(feature="rustls")] 门控，不启用则 idevice 自身编译不过）。
-idevice = { version = "0.1.63", default-features = false, features = ["remote_pairing", "tcp", "ring"] }
+# rsd/afc/installation_proxy：设备端安装走 CoreDevice/RSD 路径（iOS 17+ 本机 49152）。
+idevice = { version = "0.1.63", default-features = false, features = ["remote_pairing", "tcp", "ring", "rsd", "afc", "installation_proxy"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "net", "io-util", "time", "macros"] }

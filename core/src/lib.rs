@@ -175,11 +175,14 @@ pub extern "C" fn si_install_ipa(ipa: *const c_char) -> c_int {
     };
     match install::install_ipa(std::path::Path::new(&ipa)) {
         Ok(_) => 0,
-        Err(e) => {
-            log_msg(&format!("install error: {e}"));
-            -1
-        }
+        Err(_) => -1, // 详细错误已由 install 模块按错误链写入日志
     }
+}
+
+/// 安装进度：-1=未开始/失败，0..100=进行中，100=完成。Swift 侧轮询它更新 UI。
+#[no_mangle]
+pub extern "C" fn si_install_progress() -> c_int {
+    install::install_percent()
 }
 
 /// 释放由 core 分配并返回给 Swift 的 C 字符串。

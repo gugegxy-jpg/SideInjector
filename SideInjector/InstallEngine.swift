@@ -129,17 +129,16 @@ enum EnvProbe {
     }
 }
 
-/// 设备端安装引擎 —— 参考 FrizzleM/SideInstaller 的「本地回环隧道」思路。
+/// 设备端安装引擎 —— 走 **CoreDevice / RSD** 链路（iOS 17+ 的设备端安装通道）。
 ///
-/// 机制：通过 LocalDevVPN（本地 VPN/DNS 描述文件）让设备自身向本机
-/// `lockdownd` 服务发起连接，再经 `com.apple.mobile.installation_proxy`
-/// 把重签后的 IPA 装到同一台设备。
-///   - iOS 27+：可设备端自配对（无需 PC）。
-///   - iOS 18–26：需要 PC 预先生成的配对文件（在「配对文件」一栏选择）。
+/// 实测结论（App 内端口探测）：设备自身只有 **RSD 49152** 可连；
+/// lockdownd 62078 / usbmuxd 27015 在回环、VPN 地址、WiFi 地址上全部超时，
+/// 因此经典 lockdownd 方案已废弃。
 ///
-/// 注：完整的 CoreDevice/XPC 自配对握手由 SideInstaller 的 rust-core(idevice) 实现；
-/// 这里用 `Network` 框架实现了回环隧道连接 + lockdownd/installation_proxy 的
-/// plist 协议，作为可直接编译运行的安装层。
+/// 真正的安装由 Rust core（`idevice` crate，MIT 许可）完成：
+///   TcpStream(127.0.0.1:49152) → RsdHandshake → AFC 上传 /PublicStaging
+///     → installation_proxy 安装（PackageType=Developer，带真实进度）。
+/// 本类只负责启动它并按轮询上报进度。
 final class InstallEngine {
     static let shared = InstallEngine()
 
@@ -150,83 +149,47 @@ final class InstallEngine {
     private var tunnelHost = "127.0.0.1"
 
     /// 安装并**逐步上报真实进度**（0…1）。
-    /// 只有 installd 真正返回 Complete 才算成功——绝不以进度值判定成功。
+    ///
+    /// 设备端安装由 Rust core 走 **CoreDevice / RSD 链路**（AFC 上传到 `/PublicStaging`
+    /// + installation_proxy 安装，PackageType=Developer），这里只负责：
+    ///   1. 在后台线程调用阻塞的 `si_install_ipa`；
+    ///   2. 轮询 `si_install_progress` 把真实进度喂给 UI。
+    /// 只有 installd 真正返回成功（FFI 返回 0）才算完成——绝不以进度值判定成功。
     func install(ipaPath: String,
                  pairingURL: URL?,
                  onProgress: @escaping (Double, String) -> Void) async -> InstallResult {
-        let candidates = TunnelNet.candidateHosts()
-        LogStore.shared.append("install: 探测本地回环隧道端点（候选：\(candidates.joined(separator: "、"))）")
-        let pairing = pairingURL.flatMap { loadPairing($0) }
+        LogStore.shared.append("install: 走 CoreDevice/RSD 链路（127.0.0.1:49152）")
 
-        do {
-            // 逐个候选尝试：loopback VPN 把设备自身的 lockdownd 暴露在某个本地地址上，
-            // 具体是哪个地址随 VPN 实现而变 —— 写死 127.0.0.1 就会直接连接超时。
-            var locked: NWConnection?
-            var lastErr: Error?
-            for host in candidates {
-                do {
-                    let c = try await withTimeout(seconds: 3) {
-                        try await connectTLS(host: host, port: self.lockdownPort)
-                    }
-                    locked = c
-                    self.tunnelHost = host
-                    LogStore.shared.append("install: 隧道端点 \(host):\(self.lockdownPort) 已连通")
-                    break
-                } catch {
-                    lastErr = error
-                    LogStore.shared.append("install: 端点 \(host) 无响应（\(error.localizedDescription)）")
-                }
+        final class InstallState { var done = false; var rc: Int32 = -1 }
+        let state = InstallState()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let rc = RustBridge.shared.install(ipa: ipaPath)
+            DispatchQueue.main.async {
+                state.rc = rc
+                state.done = true
             }
-            guard let conn = locked else {
-                for line in await probePorts() {
-                    LogStore.shared.append("tunnel-probe: \(line)")
-                }
-                return .init(ok: false, message: """
-                回环隧道安装失败：候选端点都连不上（\(candidates.joined(separator: "、"))）。
-                请先安装并开启 loopback VPN（StosVPN / SideStore 的 VPN 描述文件）—— 它的作用就是把本设备自身的 lockdownd/CoreDevice 暴露到本地地址，没有它任何地址都连不通。
-                也可改用「分享已签名 IPA」，交给 AltStore / SideStore 安装。
-                最后错误：\(lastErr?.localizedDescription ?? "未知")
-                """)
-            }
-            defer { conn.cancel() }
-
-            let ld = LockdownClient(connection: conn)
-            _ = try await withTimeout(seconds: 6) { try await ld.queryType() }
-            LogStore.shared.append("install: lockdownd 握手成功")
-
-            if let pairing {
-                try await withTimeout(seconds: 10) { try await ld.startSession(pairing: pairing) }
-                LogStore.shared.append("install: 已用提供的配对文件启动会话")
-            } else {
-                do {
-                    try await withTimeout(seconds: 10) { try await ld.startSession(pairing: nil) }
-                    LogStore.shared.append("install: 设备端自配对会话已建立（iOS 27+）")
-                } catch {
-                    return .init(ok: false,
-                        message: "启动会话失败：iOS 18–26 需要 PC 生成的配对文件（请在「配对文件」中选择）。\(error.localizedDescription)")
-                }
-            }
-
-            let svc = try await withTimeout(seconds: 10) {
-                try await ld.startService("com.apple.mobile.installation_proxy")
-            }
-            LogStore.shared.append("install: 已取得 installation_proxy 服务（端口 \(svc.port)）")
-
-            let ip = try await withTimeout(seconds: 10) {
-                try await connectTLS(host: self.tunnelHost, port: svc.port, ssl: svc.ssl)
-            }
-            defer { ip.cancel() }
-            let inst = InstallationProxy(connection: ip)
-            // 安装本身可能较慢，给足超时；一旦卡住即抛错 → 主流程暂停并允许「继续」。
-            try await withTimeout(seconds: 300) {
-                try await inst.install(ipaPath: ipaPath) { frac, status in
-                    DispatchQueue.main.async { onProgress(frac, "安装中：\(status)") }
-                }
-            }
-            return .init(ok: true, message: "安装成功")
-        } catch {
-            return .init(ok: false, message: "回环隧道安装失败：\(error.localizedDescription)")
         }
+
+        var lastPercent = -2
+        while !state.done {
+            if Task.isCancelled { break }
+            let p = RustBridge.shared.installProgress()
+            if p != lastPercent {
+                lastPercent = p
+                if p >= 0 {
+                    let frac = min(max(Double(p) / 100.0, 0), 1)
+                    let text = p >= 100 ? "安装完成" : "安装中：\(p)%"
+                    DispatchQueue.main.async { onProgress(frac, text) }
+                }
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+
+        if state.rc == 0 {
+            return .init(ok: true, message: "安装成功")
+        }
+        return .init(ok: false,
+                     message: "设备端安装失败：详见日志里的 `install error: …`（下一步据此定位）")
     }
 
     // MARK: - 环境检测

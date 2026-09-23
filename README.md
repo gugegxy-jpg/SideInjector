@@ -39,7 +39,7 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
    ├─ ziputil    解包 / 打包 IPA（保留符号链接）
    ├─ inject     主二进制插入 LC_LOAD_DYLIB（dylib 放 Frameworks/，constructor 自动执行）
    ├─ bundle     改 CFBundleIdentifier / CFBundleDisplayName
-   ├─ sign       进程内 apple-codesign 0.27 重签（深签 → 浅签兜底）
+   ├─ sign       进程内 apple-codesign 0.27 重签（嵌套项只重签主可执行 + 主 App 浅签）
    ├─ pair       设备端自配对（Remote Pairing，PairableHost + RpPairingFile）
    ├─ install    设备端安装（CoreDevice / RSD 链路）
    └─ logbridge  把 apple-codesign / apple-bundles 内部日志转发到 App 日志
@@ -54,7 +54,9 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
 - [x] IPA 解包 / 打包（保留符号链接与权限位）
 - [x] 主二进制注入 dylib，支持一次注入多个（注入名取各自文件名；重名自动加后缀）
 - [x] 改 Bundle ID / 显示名
-- [x] 进程内重签：`apple-codesign` 0.27，深签（递归重签所有嵌套 bundle）失败自动回退**浅签**（等价 `rcodesign --shallow`，嵌套代码保持原签名、只重签主 App）
+- [x] 进程内重签：`apple-codesign` 0.27。嵌套项（framework / appex / 注入 dylib）**逐个只重签主可执行文件**，
+      并把签名标识强制设为该 bundle 的 `CFBundleIdentifier`（否则 installd 报 `MismatchedBundleIDSigningIdentifier`）；
+      资源 bundle 仍按 bundle 级签名（只封资源）；最后**浅签主 App**，把全部内容封进主 App 的 `CodeResources`
 - [x] 证书库：多套证书持久化、可编辑、覆盖安装后**路径按当前数据容器自愈**（不会丢）
 - [x] 已签名 IPA 库：签名成功自动入库，点击即可再次安装
 - [x] 导入即入库：IPA / dylib 落到 `Application Support/Inputs/`，不依赖文档选择器给的临时副本
@@ -198,15 +200,16 @@ project.yml                XcodeGen 规格
 | 点「执行」没反应 | 现在都会**弹窗**说明原因；首页日志里也有 `输入检查：…` 行指出是哪个文件不可用 |
 | 覆盖安装后证书「丢了」 | 已在「库」页签点该证书的「编辑」，重选 P12 与描述文件保存即可（本版已做路径自愈，正常情况下会自动找回） |
 | 安装失败 | 先看**环境自检**卡片：确认 49152 可连接、开发者模式已开；再看日志里的 `install error: …` |
-| 签名报 `I/O error: No such file or directory (os error 2)` | 这个错误**不带路径**。请复制日志里这几类行：`bundle 诊断：顶层文件 …`、`bundle 诊断：主 bundle / 嵌套 …`、`签名中断：输出目录已产出文件 …`、`签名中断：最后写入 …`、以及报错前的 `[apple_…]` 行 |
+| 签名报 `I/O error: No such file or directory (os error 2)` | 这个错误**不带路径**（`apple-bundles` 的老问题）。请复制日志里这几类行：`重签（主可执行）：…`、`重签（资源/二进制）：…`、`重签失败（保留原签名）：…`、`深签（自实现）：完成 X，失败 Y`、以及报错前的 `[apple_…]` 行 |
+| 安装报 `MismatchedBundleIDSigningIdentifier` | 某个嵌套代码的**签名标识 ≠ 它的 bundle id**。看日志里 `重签（主可执行）：xxx（CFBundleIdentifier=…）` 一行标了 `**缺失**` 就说明该 bundle 的 Info.plist 没有 `CFBundleIdentifier`，标识无法修正 |
 | App 启动崩溃（注入后） | 被注入的 dylib 必须与宿主 App 用**同一张证书**重签；宿主需带 `get-task-allow` 等 entitlement |
 
 ---
 
 ## 已知问题 / 限制
 
-1. **签名可能在个别嵌套 bundle 上中断**：`apple-codesign` 0.27 遍历某个 framework 之后、写 `_CodeSignature/CodeResources` 之前抛 ENOENT（错误不带路径）。当前已内置：库日志桥接、镜像其 bundle 判定规则的结构诊断、签名中断点报告，以及**浅签兜底**（浅签模式下嵌套代码整体原样复制，只重签主 App）。
-2. **安装链路刚实现**，等待真机验证；失败时日志会给出 RSD 服务清单与完整错误链。
+1. **嵌套 bundle 已不再走 `apple-codesign` 的「整 bundle 签名」**：实测（一次 93 项的流程）它对本 IPA 里**所有带主可执行文件**的项（framework / 带可执行的 bundle）都会在中途抛**不带路径**的 `ENOENT (os error 2)`——失败的清一色是"有主可执行"的项，而成功的 30 项全是无主可执行的资源 bundle，说明它在功能正常的 bundle 签名的资源走查 / 文件搬运环节挂掉（`walk_and_seal_directory`）。现改为：这些项**只重签主可执行文件**（`MachOSigner` + `set_binary_identifier` + 嵌回原有 `CodeResources`），绕开该环节。若仍有项失败，日志会逐项给出原因与结构诊断。
+2. **安装链路已走通到 `installation_proxy`**：RP 自配对 → 隧道（`rp: 隧道已建立 …`）→ RSD 握手（64 个服务）→ AFC 上传 `/PublicStaging` + `installation_proxy` 都在正常推进；此前几次失败都停在**签名校验**（`MismatchedBundleIDSigningIdentifier`），签名修好后需要再完整验证一次安装。
 3. `InstallEngine` 里旧的经典 lockdownd / usbmux 实现已是**死代码**，待清理。
 4. 注入仅支持单切片 arm64 主二进制；Fat / arm64e 未实现。
 5. 仅对普通第三方 IPA 有效；系统 App 注入无 jailbreak 不可行。

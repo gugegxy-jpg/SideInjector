@@ -11,13 +11,28 @@
 //!          `apple-bundles` 的 `DirectoryBundle` 实现（`shallow` 判定、优先
 //!          `Resources/Info.plist`、嵌套 bundle 候选规则）后写成的**镜像检查**，
 //!          用于复现它的判定结果、定位它抛出的「不带路径」的 ENOENT。
-//!   本文件改动：签名调用链（深签 → 浅签兜底、Entitlements 提取、签出到独立目录
-//!          `.si_signed`、失败时报告输出目录进度）均为本项目自有实现。
+//!          另：`sign_nested_executable` 里「签主可执行 + 嵌回原 CodeResources」的做法，
+//!          与上游 `SingleBundleSigner::write_signed_bundle` 中签主可执行的那段一致
+//!          （`set_binary_identifier(SettingsScope::Main, ident)` /
+//!          `set_code_resources_data` / `set_info_plist_data` 的用法）。
+//!   本文件改动：签名调用链（嵌套代码改为「只重签主可执行」、Entitlements 提取、
+//!          签出到独立目录 `.si_signed`、失败时报告输出目录进度）均为本项目自有实现。
+//!
+//! 嵌套代码为什么不再「整个 bundle 一起签」（实测结论）：
+//!   apple-codesign 签 bundle 必须走 `walk_and_seal_directory`（边封资源边把文件搬到
+//!   输出目录），在设备上对**带主可执行文件**的嵌套项会稳定抛**不带路径**的
+//!   `ENOENT (os error 2)`——本项目一次流程里 93 项有 63 项失败，且失败的清一色是
+//!   "有主可执行"的 framework/appex，成功的 30 项都是没有主可执行的资源 bundle。
+//!   而 `MachOSigner` 直接改写 Mach-O 这条路已被验证可用（主 App 的主可执行就是
+//!   由它写出的）。于是嵌套项改为：只重签它的主可执行，并保留该 bundle 原有的
+//!   `_CodeSignature/CodeResources`——框架/应用的封印本来就把自己的主可执行排除在外
+//!   （规则 `^<主可执行>$ exclude: true`），内容没变则封印依旧成立；主 App 重新生成的
+//!   CodeResources 会封住嵌套项的新签名。
 
 use crate::log_msg;
 use anyhow::{Context, Result};
 use apple_codesign::cryptography::parse_pfx_data;
-use apple_codesign::{SettingsScope, SigningSettings, UnifiedSigner};
+use apple_codesign::{MachOSigner, SettingsScope, SigningSettings, UnifiedSigner};
 use std::fs;
 use std::path::Path;
 
@@ -53,6 +68,12 @@ pub fn sign_bundle(
     settings.chain_apple_certificates();
     settings.set_team_id_from_signing_certificate();
 
+    // 嵌套代码用的基础设置：**故意不带**主 App 的 Entitlements。
+    // 主 App 的授权只应出现在主可执行上；把它塞进每个 framework 会让 installd 以
+    // 「嵌套代码授权超出描述文件」之类的理由拒绝（嵌套代码的授权必须是描述文件的子集）。
+    // 每项在签名时按需自己补 Entitlements。
+    let nested_template = settings.clone();
+
     // 从 mobileprovision 提取 Entitlements 并写回签名设置
     let entitlements = extract_profile_entitlements(&prov_data)?;
     settings.set_entitlements_xml(SettingsScope::Main, entitlements.as_str())?;
@@ -74,35 +95,61 @@ pub fn sign_bundle(
         .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;
     let out = out_root.join(name);
 
-    // ① 先逐个重签嵌套代码（我们自己做"深签"）。
-    //
-    // 为什么不用 apple-codesign 的深签：
-    //   1) 它在部分 IPA 上会 ENOENT（其内部遍历的判定误判，见文件头说明）；
-    //   2) 更要紧的是**签名标识**：每个 bundle 的签名标识必须由它自己的
-    //      CFBundleIdentifier 派生，否则 installd 会拒绝：
-    //      `MismatchedBundleIDSigningIdentifier`
-    //      （实例：KAPinField.framework 原签名标识是 KAPinField，而它的 bundle id 是
-    //       org.cocoapods.KAPinField）。逐个 bundle 分别签名天然满足这一点。
-    let mut nested_settings = settings.clone();
-    // 对每个嵌套项自身用浅签：只重签它的主二进制 + 封自己的资源，
+    // ① 先逐个重签嵌套代码（我们自己做"深签"），顺序是从深到浅。
+    let mut nested_settings = nested_template.clone();
+    // 资源 bundle / dylib 仍走「文件或 bundle 级签名」；对每个嵌套项自身用浅签，
     // 不再向下递归（它的嵌套项也在我们的清单里，会各自被处理）。
     nested_settings.set_shallow(true);
 
     let nested = collect_signable_nested(app);
     log_msg(&format!("深签（自实现）：待重签嵌套代码 {} 项", nested.len()));
     let mut failed = 0usize;
+    let mut signed_exe = 0usize;
     for item in &nested {
-        // 关键：bundle 主可执行文件的签名标识取自 Info.plist 的 CFBundleIdentifier，
-        // 所以这里先把每项的 CFBundleIdentifier 打出来 —— 若它缺失，重签后依然无法
-        // 让「签名标识 == bundle id」，installd 会报 MismatchedBundleIDSigningIdentifier。
-        let id = bundle_id_of(item);
-        log_msg(&format!(
-            "  重签：{}（CFBundleIdentifier={}）",
-            item.file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            id.clone().unwrap_or_else(|| "**缺失**".to_string())
-        ));
+        let is_dir = item.is_dir();
+        let id = if is_dir { bundle_id_of(item) } else { None };
+        let name = item
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // ①-a 带主可执行文件的 bundle（.framework / .appex / .app）：只重签它的主可执行。
+        //      （为什么不用「签整个 bundle」，见文件头说明。）
+        //
+        //      签名标识必须等于该 bundle 的 CFBundleIdentifier，否则 installd 会拒绝：
+        //      `MismatchedBundleIDSigningIdentifier`
+        //      （实例：KAPinField.framework 原签名标识是 KAPinField，而它的 bundle id 是
+        //       org.cocoapods.KAPinField）。只签 Mach-O 时 apple-codesign **不会**自动
+        //      取 Info.plist，必须显式 `set_binary_identifier`。
+        if let Some(exe_path) = if is_dir { main_executable_of(item) } else { None } {
+            log_msg(&format!(
+                "  重签（主可执行）：{name}（CFBundleIdentifier={}）",
+                id.clone().unwrap_or_else(|| "**缺失**".to_string())
+            ));
+            match sign_nested_executable(
+                &exe_path,
+                item,
+                id.as_deref(),
+                &nested_template,
+                &entitlements,
+                is_extension(item),
+            ) {
+                Ok(()) => signed_exe += 1,
+                Err(e) => {
+                    failed += 1;
+                    log_msg(&format!(
+                        "  重签失败（保留原签名）：{} —— {e:#}",
+                        item.display()
+                    ));
+                    // 复现 apple-bundles 的判定规则，看它「看到的」结构是什么样。
+                    diagnose_bundle(item);
+                }
+            }
+            continue;
+        }
+
+        // ①-b 其余项：没有主可执行的资源 bundle（只封资源）、以及注入的 .dylib。
+        log_msg(&format!("  重签（资源/二进制）：{name}"));
         match sign_in_place(item, &nested_settings) {
             Ok(()) => {}
             Err(e) => {
@@ -120,7 +167,7 @@ pub fn sign_bundle(
         }
     }
     log_msg(&format!(
-        "深签（自实现）：完成 {}，失败 {}",
+        "深签（自实现）：完成 {}，失败 {}（其中主可执行重签 {signed_exe} 项）",
         nested.len() - failed,
         failed
     ));
@@ -197,30 +244,117 @@ fn collect_signable_nested(app: &Path) -> Vec<std::path::PathBuf> {
     found.into_iter().map(|(_, p)| p).collect()
 }
 
+/// 找出一个 bundle 的 Info.plist（iOS 扁平布局 / macOS 布局 / versioned framework）。
+fn info_plist_of(bundle: &Path) -> Option<std::path::PathBuf> {
+    [
+        bundle.join("Info.plist"),                             // iOS 应用 / framework（扁平）
+        bundle.join("Contents/Info.plist"),                    // macOS 风格
+        bundle.join("Resources/Info.plist"),                   // versioned framework（软链目标）
+        bundle.join("Versions/Current/Resources/Info.plist"),  // versioned framework
+    ]
+    .into_iter()
+    .find(|c| c.is_file())
+}
+
+/// 读 Info.plist 里的一个字符串键。
+fn plist_string(plist: &Path, key: &str) -> Option<String> {
+    let value = plist::Value::from_file(plist).ok()?;
+    let dict = value.as_dictionary()?;
+    dict.get(key)
+        .and_then(|x| x.as_string())
+        .map(|s| s.to_string())
+}
+
 /// 读出一个 bundle 的 `CFBundleIdentifier`。
 ///
-/// 为什么需要它：apple-codesign 对 **bundle 主可执行文件**的签名标识
-/// 取自 Info.plist 的 CFBundleIdentifier（`set_binary_identifier` 对主可执行无效）。
-/// 若该键缺失，重签后也修不掉「签名标识 ≠ bundle id」，installd 会拒绝安装。
+/// 为什么需要它：installd 会校验「**签名标识 == bundle id**」，否则报
+/// `MismatchedBundleIDSigningIdentifier`。而单独签一个 Mach-O 时 apple-codesign
+/// **不会**自动从 Info.plist 取标识，必须由我们用 `set_binary_identifier` 显式给。
+/// 若该键缺失，标识就永远修不好 —— 所以调用处会把它打出来，缺失时标 `**缺失**`。
 fn bundle_id_of(path: &Path) -> Option<String> {
-    let candidates = [
-        path.join("Info.plist"),                              // iOS 应用 / framework（扁平）
-        path.join("Contents/Info.plist"),                     // macOS 风格
-        path.join("Resources/Info.plist"),                    // versioned framework（软链目标）
-        path.join("Versions/Current/Resources/Info.plist"),    // versioned framework
-    ];
-    for c in candidates {
-        if let Ok(v) = plist::Value::from_file(&c) {
-            if let Some(id) = v
-                .as_dictionary()
-                .and_then(|d| d.get("CFBundleIdentifier"))
-                .and_then(|x| x.as_string())
-            {
-                return Some(id.to_string());
-            }
+    plist_string(&info_plist_of(path)?, "CFBundleIdentifier")
+}
+
+/// 依 `CFBundleExecutable` 找出 bundle 的主可执行文件。
+fn main_executable_of(bundle: &Path) -> Option<std::path::PathBuf> {
+    let exe = plist_string(&info_plist_of(bundle)?, "CFBundleExecutable")?;
+    if exe.is_empty() || exe.contains('/') {
+        return None;
+    }
+    [
+        bundle.join(&exe),                         // .framework / .appex / .app（iOS 扁平）
+        bundle.join("Contents/MacOS").join(&exe),  // macOS 风格
+    ]
+    .into_iter()
+    .find(|c| c.is_file())
+}
+
+/// 是否扩展（.appex）：扩展需要带授权，其它嵌套代码一律清空授权。
+fn is_extension(item: &Path) -> bool {
+    item.file_name()
+        .map(|n| n.to_string_lossy().ends_with(".appex"))
+        .unwrap_or(false)
+}
+
+/// 空的 Entitlements plist：显式清空嵌套代码（framework / 注入 dylib）的授权。
+const EMPTY_ENTITLEMENTS: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+    r#"<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">"#,
+    r#"<plist version="1.0"><dict/></plist>"#
+);
+
+/// 重签一个 bundle 的**主可执行文件**（不重签整个 bundle，理由见文件头）。
+///
+/// 只做三件必须的事：
+///   1. 签名标识显式设为该 bundle 的 `CFBundleIdentifier`（installd 会校验）；
+///   2. 把该 bundle 原有的 `_CodeSignature/CodeResources` 原样嵌回签名
+///      （主可执行本来就不在里面，资源没动 → 封印依旧成立）；
+///   3. 扩展带上主 App 的授权（描述文件允许的子集），framework / dylib 清空授权。
+fn sign_nested_executable(
+    exe: &Path,
+    bundle: &Path,
+    bundle_id: Option<&str>,
+    template: &SigningSettings,
+    app_entitlements: &str,
+    extension: bool,
+) -> Result<()> {
+    let data = fs::read(exe).with_context(|| format!("读取主可执行失败：{}", exe.display()))?;
+
+    let mut s = template.clone();
+    if let Some(id) = bundle_id {
+        s.set_binary_identifier(SettingsScope::Main, id);
+    }
+    if let Ok(bytes) = fs::read(bundle.join("_CodeSignature").join("CodeResources")) {
+        s.set_code_resources_data(SettingsScope::Main, bytes);
+    }
+    if let Some(plist) = info_plist_of(bundle) {
+        if let Ok(bytes) = fs::read(&plist) {
+            s.set_info_plist_data(SettingsScope::Main, bytes);
         }
     }
-    None
+    let ents = if extension {
+        app_entitlements
+    } else {
+        EMPTY_ENTITLEMENTS
+    };
+    s.set_entitlements_xml(SettingsScope::Main, ents)?;
+
+    let signer = MachOSigner::new(&data)?;
+    let mut signed = Vec::with_capacity(data.len() + (1 << 17));
+    signer.write_signed_binary(&s, &mut signed)?;
+
+    // 原子替换：先写同目录的临时文件（并保留可执行位），再 rename 覆盖原文件，
+    // 避免写一半失败把二进制写坏。
+    let fname = exe
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "exe".to_string());
+    let tmp = exe.with_file_name(format!(".si_exe_{fname}"));
+    fs::write(&tmp, &signed).with_context(|| format!("写入新签名失败：{}", tmp.display()))?;
+    let mode = fs::metadata(exe)?.permissions();
+    fs::set_permissions(&tmp, mode)?;
+    fs::rename(&tmp, exe).with_context(|| format!("替换主可执行失败：{}", exe.display()))?;
+    Ok(())
 }
 
 /// 就地把一个代码项（bundle 或 dylib）重签：签进临时目录，成功后再整体替换回去。

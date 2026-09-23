@@ -2,6 +2,7 @@ import Foundation
 import Network
 import Security
 import Darwin
+import UIKit
 
 /// 安装结果
 struct InstallResult {
@@ -38,9 +39,9 @@ func withTimeout<T>(seconds: Double, _ body: @escaping () async throws -> T) asy
 /// 参考 SideInstaller 的做法：把 RSD 地址、回环、以及各本地接口地址一起作为候选，
 /// 在一个统一超时内逐个尝试。
 enum TunnelNet {
-    static func candidateHosts() -> [String] {
-        var tunnels: [String] = []   // utun/ipsec/ppp/tap 等 VPN 隧道接口
-        var others: [String] = []    // en0/lo0 等普通接口
+    /// 本机所有 IPv4 地址（含接口名）。
+    static func allIPv4() -> [(name: String, ip: String)] {
+        var out: [(name: String, ip: String)] = []
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         if getifaddrs(&ifaddr) == 0, let first = ifaddr {
             defer { freeifaddrs(ifaddr) }
@@ -52,22 +53,79 @@ enum TunnelNet {
                     var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
                     if getnameinfo(sa, socklen_t(sa.pointee.sa_len),
                                    &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
-                        let ip = String(cString: buf)
-                        if name.hasPrefix("utun") || name.hasPrefix("ipsec")
-                            || name.hasPrefix("ppp") || name.hasPrefix("tap") {
-                            tunnels.append(ip)
-                        } else {
-                            others.append(ip)
-                        }
+                        out.append((name, String(cString: buf)))
                     }
                 }
                 ptr = entry.ifa_next
             }
         }
+        return out
+    }
+
+    /// VPN / 隧道类接口（loopback VPN 就是靠 utun 提供映射的）。
+    static func isTunnelInterface(_ name: String) -> Bool {
+        name.hasPrefix("utun") || name.hasPrefix("ipsec")
+            || name.hasPrefix("ppp") || name.hasPrefix("tap")
+    }
+
+    /// loopback VPN 的隧道接口及其地址；为空即表示 VPN 未连接。
+    static func vpnInterfaces() -> [(name: String, ip: String)] {
+        allIPv4().filter { isTunnelInterface($0.name) }
+    }
+
+    static func candidateHosts() -> [String] {
+        let all = allIPv4()
+        let tunnels = all.filter { isTunnelInterface($0.name) }.map(\.ip)
+        let others = all.filter { !isTunnelInterface($0.name) }.map(\.ip)
         var seen = Set<String>()
         // VPN 隧道地址优先；再补几个常见映射地址与回环兜底。
         return (tunnels + others + ["10.7.0.1", "10.7.0.2", "127.0.0.1"])
             .filter { !$0.hasPrefix("169.254.") && seen.insert($0).inserted }
+    }
+}
+
+/// 环境自检结果：安装排障最需要的几项。
+struct EnvSnapshot {
+    var osVersion = "?"
+    var osBuild = "-"
+    var selfPairCapable = false
+    var vpnUp = false
+    var vpnDetail = "未检测"
+    var portLines: [String] = []
+}
+
+enum EnvProbe {
+    /// iOS 版本 + build（如 18.5 / 22F76）。
+    static func osInfo() -> (version: String, build: String) {
+        let version = UIDevice.current.systemVersion
+        var build = "-"
+        var size = 0
+        if sysctlbyname("kern.osversion", nil, &size, nil, 0) == 0, size > 0 {
+            var buf = [CChar](repeating: 0, count: size)
+            if sysctlbyname("kern.osversion", &buf, &size, nil, 0) == 0 {
+                build = String(cString: buf)
+            }
+        }
+        return (version, build)
+    }
+
+    /// iOS 27+ 支持设备端自配对，不需要 PC 生成的配对文件。
+    static func isSelfPairCapable(_ version: String) -> Bool {
+        (Int(version.split(separator: ".").first ?? "") ?? 0) >= 27
+    }
+
+    static func snapshot() -> EnvSnapshot {
+        var s = EnvSnapshot()
+        let os = osInfo()
+        s.osVersion = os.version
+        s.osBuild = os.build
+        s.selfPairCapable = isSelfPairCapable(os.version)
+        let vpn = TunnelNet.vpnInterfaces()
+        s.vpnUp = !vpn.isEmpty
+        s.vpnDetail = vpn.isEmpty
+            ? "未发现 utun/ipsec/ppp/tap 隧道接口（请先打开 LocalDevVPN）"
+            : vpn.map { "\($0.name) · \($0.ip)" }.joined(separator: "、")
+        return s
     }
 }
 

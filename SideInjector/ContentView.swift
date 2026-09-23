@@ -9,6 +9,9 @@ struct ContentView: View {
     @State private var tab = 0
     @ObservedObject private var pairing = PairingController.shared
     @ObservedObject private var certs = CertStore.shared
+    /// 环境自检（iOS 版本 / LocalDevVPN 状态 / 隧道端口探测）
+    @State private var env = EnvSnapshot()
+    @State private var envBusy = false
 
     var body: some View {
         // 背景作为「兄弟层」铺满全屏（含安全区）；内容层尊重安全区。
@@ -59,6 +62,7 @@ struct ContentView: View {
                 certCard.cascadeItem(1)
                 inputCard.cascadeItem(2)
                 pairingCard
+                envCard
                 if model.busy || model.stageIndex >= 0 {
                     progressCard.transition(.cardAppear)
                 }
@@ -285,6 +289,77 @@ struct ContentView: View {
             }
         }
         .onAppear { PairingController.shared.requestLocalNetworkPermission() }
+    }
+
+    // MARK: - 环境自检
+
+    private var envCard: some View {
+        PanelCard {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    sectionTitle("环境自检", systemImage: "stethoscope")
+                    Spacer(minLength: 8)
+                    Button {
+                        Task { await refreshEnv(logIt: true) }
+                    } label: {
+                        Label("重新检测", systemImage: "arrow.clockwise")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(envBusy)
+                }
+                envRow("iOS 版本", "\(env.osVersion)（\(env.osBuild)）")
+                envRow("配对能力", env.selfPairCapable
+                       ? "iOS 27+ · 支持设备端自配对（无需配对文件）"
+                       : "iOS 18–26 · 需要 PC 生成的配对文件")
+                envRow("LocalDevVPN", env.vpnUp
+                       ? "已连接 · \(env.vpnDetail)"
+                       : "未连接 · \(env.vpnDetail)")
+                if !env.portLines.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("隧道端口探测").font(.caption).foregroundStyle(.secondary)
+                        ForEach(env.portLines, id: \.self) { line in
+                            Text(line)
+                                .font(.system(.caption2, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if env.osVersion == "?" { Task { await refreshEnv(logIt: false) } }
+        }
+    }
+
+    private func envRow(_ key: String, _ value: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text(key)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 84, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// 采集环境信息（iOS 版本 / LocalDevVPN / 隧道端口）；手动刷新时同时写日志，便于复制发我。
+    private func refreshEnv(logIt: Bool) async {
+        await MainActor.run { envBusy = true }
+        var snap = EnvProbe.snapshot()
+        snap.portLines = await InstallEngine.shared.probePorts()
+        await MainActor.run {
+            env = snap
+            envBusy = false
+        }
+        if logIt {
+            LogStore.shared.append("环境自检：iOS \(snap.osVersion)（\(snap.osBuild)）"
+                                   + (snap.selfPairCapable ? " · 支持设备端自配对" : " · 需配对文件"))
+            LogStore.shared.append("环境自检：LocalDevVPN \(snap.vpnUp ? "已连接" : "未连接") · \(snap.vpnDetail)")
+            for line in snap.portLines { LogStore.shared.append("tunnel-probe: \(line)") }
+        }
     }
 
     // MARK: - 进度

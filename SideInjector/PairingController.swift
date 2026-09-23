@@ -4,7 +4,7 @@ import Network
 
 /// 设备端自配对控制器：启动 Rust 配对主机 + Bonjour 广播 + PIN 展示 + 完成检测。
 /// 参考 SideInstaller 的 PairingController / PairingManager。
-final class PairingController: ObservableObject {
+final class PairingController: NSObject, ObservableObject, NetServiceDelegate {
     static let shared = PairingController()
 
     @Published var status: String = "未配对"
@@ -18,7 +18,7 @@ final class PairingController: ObservableObject {
     private var pollTask: Task<Void, Never>?
     private let pairingPath: String
 
-    private init() {
+    private override init() {
         let dir = FileManager.default.temporaryDirectory
         pairingPath = dir.appendingPathComponent("rp_pairing.plist").path
         // 若上次已配对过，恢复状态
@@ -35,6 +35,9 @@ final class PairingController: ObservableObject {
         isPairing = true
         pin = nil
         pairedDeviceName = nil
+        // 配对期间必须保持进程存活：用户要切到「设置 → 开发者 → 配对」，
+        // 若 App 被系统挂起，Bonjour 注册会随之失效，设备就搜不到本 App。
+        KeepAlive.shared.start()
         setStatus("正在请求「本地网络」权限，请点「允许」弹窗…")
         // 主动触发本地网络授权弹窗（NetService.publish 在部分 iOS 版本上不一定弹窗）
         requestLocalNetworkPermission()
@@ -81,6 +84,7 @@ final class PairingController: ObservableObject {
         stopAdvertising()
         permissionProbe?.cancel()
         permissionProbe = nil
+        KeepAlive.shared.stop()
         isPairing = false
     }
 
@@ -92,9 +96,12 @@ final class PairingController: ObservableObject {
     /// NetService 才需要带末尾点的完整类型。
     func requestLocalNetworkPermission() {
         permissionProbe?.cancel()
+        // includePeerToPeer 允许经 AWDL 等点对点发现，提升触发/发现的成功率（与参考实现一致）。
+        let params = NWParameters.tcp
+        params.includePeerToPeer = true
         let browser = NWBrowser(
             for: .bonjour(type: "_remotepairing-pairable-host._tcp", domain: "local."),
-            using: NWParameters()
+            using: params
         )
         browser.stateUpdateHandler = { [weak self] state in
             if case let .failed(error) = state {
@@ -133,9 +140,27 @@ final class PairingController: ObservableObject {
         let service = NetService(domain: "", type: "_remotepairing-pairable-host._tcp.",
                                  name: serviceID, port: port)
         service.setTXTRecord(NetService.data(fromTXTRecord: txt))
+        service.delegate = self
         service.publish()
         netService = service
+        LogStore.shared.append("开始广播 Bonjour：name=\(serviceID) port=\(port) TXT=\(txt.count) 项")
         setStatus("正在广播，请在本机打开 设置 → 开发者 → 配对，选择「SideInjector」并输入上方配对码（若没有「开发者」菜单，请先到 设置 → 隐私与安全性 → 开发者模式 开启；并允许本 App 的「本地网络」权限）")
+    }
+
+    // MARK: - NetServiceDelegate
+
+    func netServiceDidPublish(_ sender: NetService) {
+        LogStore.shared.append("Bonjour 广播成功：\(sender.name) @\(sender.port) 域 \(sender.domain)")
+    }
+
+    func netService(_ sender: NetService, didNotPublish errorDict: [String: NSNumber]) {
+        let code = errorDict[NetService.errorCode]?.intValue ?? 0
+        LogStore.shared.append("Bonjour 广播失败：code=\(code) \(errorDict)")
+        setStatus("Bonjour 广播失败（code=\(code)）：请确认已连接 Wi‑Fi 且本地网络权限已开启")
+    }
+
+    func netServiceDidStop(_ sender: NetService) {
+        LogStore.shared.append("Bonjour 广播已停止")
     }
 
     private func stopAdvertising() {
@@ -148,6 +173,7 @@ final class PairingController: ObservableObject {
             self.stopAdvertising()
             self.permissionProbe?.cancel()
             self.permissionProbe = nil
+            KeepAlive.shared.stop()
             self.pairedDeviceName = deviceName
             self.pairingFilePath = self.pairingPath
             self.pin = nil
@@ -161,6 +187,7 @@ final class PairingController: ObservableObject {
             self.stopAdvertising()
             self.permissionProbe?.cancel()
             self.permissionProbe = nil
+            KeepAlive.shared.stop()
             self.pin = nil
             self.status = "配对失败：\(msg ?? "未知错误")"
             self.isPairing = false

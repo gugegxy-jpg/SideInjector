@@ -107,7 +107,9 @@ async fn run_pair(out_path: String) -> Result<String, String> {
     use tokio::net::TcpListener;
 
     let name = "SideInjector".to_string();
-    let model = "iPhone".to_string();
+    // 机型标识与参考实现（SideInstaller）一致用 Mac 机型：其「设置 → 开发者 → 配对」
+    // 是按可配对主机（Mac）列举的，给一个真实 Mac 机型标识更稳妥。
+    let model = "Mac17,7".to_string();
 
     // 复用已有配对文件（保留 host 密钥）；否则生成新的
     let mut pairing_file = match RpPairingFile::read_from_file(&out_path).await {

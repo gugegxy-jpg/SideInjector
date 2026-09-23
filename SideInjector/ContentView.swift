@@ -8,51 +8,47 @@ struct ContentView: View {
     @ObservedObject private var pairing = PairingController.shared
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                AppBackground()
-                    .ignoresSafeArea()
-                // 关键：让 ScrollView 填满 ZStack 的整个高度，否则内容比屏幕短时
-                // ZStack 会把它竖直居中，导致上下露出大块背景（黑块）。
-                ScrollView {
-                    VStack(spacing: 18) {
-                        header.cascadeItem(0)
-                        certCard.cascadeItem(1)
-                        inputCard.cascadeItem(2)
-                        pairingCard
-                        if model.busy || model.stageIndex >= 0 {
-                            progressCard.transition(.cardAppear)
-                        }
-                        actionButton.cascadeItem(4)
-                        if let _ = model.shareItem {
-                            Button {
-                                presentingShare = true
-                            } label: {
-                                Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
-                            }
-                            .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
-                            .transition(.cardAppear)
-                        }
-                        logCard.cascadeItem(5)
+        ScrollView {
+            VStack(spacing: 18) {
+                header.cascadeItem(0)
+                certCard.cascadeItem(1)
+                inputCard.cascadeItem(2)
+                pairingCard
+                if model.busy || model.stageIndex >= 0 {
+                    progressCard.transition(.cardAppear)
+                }
+                actionButton.cascadeItem(4)
+                if let _ = model.shareItem {
+                    Button {
+                        presentingShare = true
+                    } label: {
+                        Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
                     }
-                    .padding(20)
-                    // iPhone 全宽；iPad 限宽成居中列（参照 SideInstaller 全宽自适应，
-                    // 这里给 iPad 一个可读最大列宽，避免超宽拉伸）。
-                    .frame(maxWidth: hSize == .regular ? CGFloat(900) : .infinity)
+                    .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
+                    .transition(.cardAppear)
                 }
-                .scrollDismissesKeyboard(.interactively)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.smooth(duration: 0.35), value: model.busy)
-                .animation(.smooth(duration: 0.35), value: model.stageIndex)
-                .animation(.smooth(duration: 0.35), value: model.shareItem != nil)
+                logCard.cascadeItem(5)
             }
-            .navigationBarHidden(true)
-            .preferredColorScheme(.dark)
-            .tint(Theme.accent)
-            .sheet(isPresented: $presentingShare) {
-                if let url = model.shareItem {
-                    ShareSheet(activityItems: [url])
-                }
+            .padding(20)
+            // iPhone 全宽；iPad 限宽成居中列（参照 SideInstaller 全宽自适应，
+            // 这里给 iPad 一个可读最大列宽，避免超宽拉伸）。
+            .frame(maxWidth: hSize == .regular ? CGFloat(900) : .infinity,
+                   maxHeight: .infinity, alignment: .top)
+        }
+        // 关键：把背景直接作为 ScrollView 的背景铺满全屏，内容 top 对齐且撑满高度，
+        // 避免内容比屏幕短时竖直居中、上下露出纯黑块。
+        .background(AppBackground().ignoresSafeArea())
+        .scrollDismissesKeyboard(.interactively)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationBarHidden(true)
+        .preferredColorScheme(.dark)
+        .tint(Theme.accent)
+        .animation(.smooth(duration: 0.35), value: model.busy)
+        .animation(.smooth(duration: 0.35), value: model.stageIndex)
+        .animation(.smooth(duration: 0.35), value: model.shareItem != nil)
+        .sheet(isPresented: $presentingShare) {
+            if let url = model.shareItem {
+                ShareSheet(activityItems: [url])
             }
         }
     }

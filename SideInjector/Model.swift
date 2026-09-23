@@ -114,8 +114,10 @@ final class Model: ObservableObject {
 
     private func applySelectedCert() {
         guard let cert = selectedCert else { return }
-        certP12 = URL(fileURLWithPath: cert.p12Path)
-        profile = URL(fileURLWithPath: cert.provPath)
+        // 用 CertStore 推导出的可用路径：覆盖安装后数据容器会换 UUID，
+        // 索引里记录的旧绝对路径会失效，直接读 cert.p12Path 就会「证书丢了」。
+        certP12 = CertStore.shared.p12URL(for: cert)
+        profile = CertStore.shared.provURL(for: cert)
         certPass = cert.password
     }
 
@@ -142,6 +144,10 @@ final class Model: ObservableObject {
         }
         guard profile != nil else {
             return failInput("所选证书缺少描述文件（mobileprovision），请到「库」页签编辑该证书并重新选择")
+        }
+        // 覆盖安装会更换数据容器路径，证书文件可能读不到：先明确告知怎么修，别让它到签名阶段才失败。
+        if let cert = selectedCert, !CertStore.shared.isUsable(cert) {
+            return failInput("所选证书的证书文件已丢失（覆盖安装会更换数据容器路径）：请到「库」页签对该证书点「编辑」重新选择 P12 与描述文件并保存")
         }
 
         // 2) 立刻给出可见反馈：准备阶段要把 IPA/证书复制进沙盒，大 IPA 会耗时。

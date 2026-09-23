@@ -128,10 +128,16 @@ struct LibraryView: View {
                 .foregroundStyle(model.selectedCertID == c.id ? Theme.accent : Color.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(c.name).font(.subheadline.weight(.semibold))
-                Text(URL(fileURLWithPath: c.provPath).lastPathComponent)
+                Text(CertStore.shared.provURL(for: c).lastPathComponent)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if !CertStore.shared.isUsable(c) {
+                    Text("证书文件缺失：请点「编辑」重新选择 P12 与描述文件")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .lineLimit(2)
+                }
             }
             Spacer(minLength: 6)
             Button {

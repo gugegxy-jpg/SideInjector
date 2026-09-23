@@ -37,7 +37,29 @@ final class IPALibrary: ObservableObject {
     private func load() {
         guard let data = try? Data(contentsOf: indexURL),
               let list = try? JSONDecoder().decode([SignedIPA].self, from: data) else { return }
-        items = list.filter { FileManager.default.fileExists(atPath: $0.path) }
+        // 覆盖安装会更换数据容器路径：索引里记录的绝对路径会过期，
+        // 必须重新落到当前容器，否则整库会被误判为「文件不存在」而清空。
+        items = list.compactMap { item in
+            let url = resolve(item)
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            var m = item
+            m.path = url.path
+            return m
+        }
+        persist()
+    }
+
+    /// 优先当前容器的标准位置 → 索引里的原路径 → 按 `/Signed/` 之后的部分重定向到当前容器。
+    private func resolve(_ item: SignedIPA) -> URL {
+        let fm = FileManager.default
+        let canonical = dir.appendingPathComponent("\(item.id.uuidString).ipa")
+        if fm.fileExists(atPath: canonical.path) { return canonical }
+        if fm.fileExists(atPath: item.path) { return URL(fileURLWithPath: item.path) }
+        if let r = item.path.range(of: "/Signed/") {
+            let rebased = dir.appendingPathComponent(String(item.path[r.upperBound...]))
+            if fm.fileExists(atPath: rebased.path) { return rebased }
+        }
+        return canonical
     }
 
     private func persist() {
@@ -72,5 +94,5 @@ final class IPALibrary: ObservableObject {
         persist()
     }
 
-    func url(for item: SignedIPA) -> URL { URL(fileURLWithPath: item.path) }
+    func url(for item: SignedIPA) -> URL { resolve(item) }
 }

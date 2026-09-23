@@ -147,7 +147,7 @@ struct ContentView: View {
                     .pickerStyle(.menu)
                     .tint(Theme.accent)
                     if let cert = model.selectedCert {
-                        Text("描述文件：\(URL(fileURLWithPath: cert.provPath).lastPathComponent)")
+                        Text("描述文件：\(CertStore.shared.provURL(for: cert).lastPathComponent)")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)

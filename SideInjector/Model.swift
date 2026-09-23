@@ -352,20 +352,12 @@ final class Model: ObservableObject {
 
     /// 清理本次流程用到的临时目录与临时产物。
     private func cleanupTemp() {
-        let fm = FileManager.default
-        if let ctx {
-            try? fm.removeItem(at: ctx.ipaCopy.deletingLastPathComponent())  // si_in_*
-            try? fm.removeItem(at: ctx.tmp)                                  // si_out_*
-            try? fm.removeItem(at: ctx.outIpa)                               // signed_*.ipa
-        }
-        // 兜底：清掉可能残留的同前缀临时项。
-        if let items = try? fm.contentsOfDirectory(at: fm.temporaryDirectory,
-                                                   includingPropertiesForKeys: nil) {
-            for u in items {
-                let n = u.lastPathComponent
-                if n.hasPrefix("si_in_") || n.hasPrefix("si_out_") || n.hasPrefix("signed_") {
-                    try? fm.removeItem(at: u)
-                }
+        // 交给 Storage 统一处理：tmp 下带我们前缀的目录全清（含 si_out_* 解包工作树、
+        // si_export_* 导出产物、si_share_* 导出副本）。放后台队列，避免几十 GB 的删除卡住界面。
+        DispatchQueue.global(qos: .utility).async {
+            let freed = Storage.cleanWorkDirs()
+            if freed > 50 * 1024 * 1024 {
+                LogStore.shared.append("已清理临时文件 \(Storage.human(freed))")
             }
         }
     }

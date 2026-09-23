@@ -92,7 +92,7 @@ struct LibraryView: View {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("缓存（临时文件）").font(.subheadline.weight(.semibold))
-                        Text("解包 / 注入 / 签名 / 打包过程中的临时目录。清理**不会**影响已导入的 IPA、dylib、证书、签名产物与日志。")
+                        Text("解包 / 注入 / 签名 / 打包过程中的临时目录。清理**不会**影响已导入的 IPA、dylib、证书、签名产物与日志；**App 启动时也会自动清理上次遗留**（流程被系统杀掉时留下的解包工作树往往有好几个 GB）。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

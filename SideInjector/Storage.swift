@@ -38,17 +38,42 @@ enum Storage {
         cacheItems().reduce(Int64(0)) { $0 + $1.bytes }
     }
 
-    /// 清空缓存，返回释放的字节数。
+    /// 只清 `tmp/` 下的**工作目录（解包残留）**，返回释放的字节数：
+    /// `si_out_*`（解包后的工作树，最大）、`si_in_*`（输入副本）、`si_export_*`（导出产物）、
+    /// `si_share_*`（导出用临时副本）等。
+    ///
+    /// 用途：
+    ///   - **启动时自动清理**：上次运行若被系统杀掉（大包流程很常见），这些目录会留在 tmp 里，
+    ///     动辄几个 GB，越积越多；
+    ///   - 手动「清理缓存」；
+    ///   - 取消流程时立刻释放空间。
+    @discardableResult
+    static func cleanWorkDirs() -> Int64 {
+        let fm = FileManager.default
+        var freed: Int64 = 0
+        for u in tmpCacheURLs() {
+            let n = size(of: u)
+            try? fm.removeItem(at: u)
+            // 只有确认删掉了才计入释放量（避免把失败当成成功报给用户）。
+            if !fm.fileExists(atPath: u.path) { freed += n }
+        }
+        return freed
+    }
+
+    /// 清空缓存（工作目录 + `Caches`），返回释放的字节数。
     @discardableResult
     static func cleanCache() -> Int64 {
         let fm = FileManager.default
-        let before = cacheBytes()
-        for u in tmpCacheURLs() { try? fm.removeItem(at: u) }
+        var freed = cleanWorkDirs()
         if let caches = cachesURL(),
            let items = try? fm.contentsOfDirectory(at: caches, includingPropertiesForKeys: nil) {
-            for u in items { try? fm.removeItem(at: u) }
+            for u in items {
+                let n = size(of: u)
+                try? fm.removeItem(at: u)
+                freed += n
+            }
         }
-        return max(0, before - cacheBytes())
+        return freed
     }
 
     /// 递归统计文件 / 目录大小。

@@ -89,6 +89,60 @@ pub fn install_ipa(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
     }
 }
 
+/// 把 installd 返回的原始错误翻译成**可执行的处理建议**。
+///
+/// 为什么需要：installd 的失败经 `idevice` 传回来是 `UnknownErrorType("<英文>")` 这样的裸串，
+/// 用户看不懂，而真正的原因往往只有一个。匹配不到就返回 `None`（不臆测）。
+fn explain_install_error(raw: &str) -> Option<String> {
+    // 取 `after` 之后、`before` 之前的片段（用于从 installd 文案里抠出两个 App ID）。
+    fn between(text: &str, after: &str, before: &str) -> Option<String> {
+        let rest = text.split_once(after)?.1;
+        let end = rest.find(before)?;
+        Some(rest[..end].to_string())
+    }
+
+    if raw.contains("MismatchedApplicationIdentifierEntitlement") {
+        let new_id = between(raw, "entitlement string (", ")").unwrap_or_else(|| "(未知)".into());
+        let old_id = between(
+            raw,
+            "installed application's application-identifier string (",
+            ")",
+        )
+        .unwrap_or_else(|| "(未知)".into());
+        return Some(format!(
+            "══ 安装被 iOS 拒绝：跨 App ID 覆盖升级 ══\n\
+             设备上已装的同名 App：{old_id}\n\
+             本次要装的：          {new_id}\n\
+             原因：两者 Bundle ID 相同，但 application-identifier（带证书团队前缀的 App ID）不同。\n\
+             　　 iOS 不允许用另一张证书去「覆盖升级」已装好的同名 App；若设备上装的是\n\
+             　　 App Store 正版（或之前用别家证书装的改版），必然报这一条。\n\
+             处理（二选一）：\n\
+             　 ① 先在设备上把那个 App 卸载（长按图标 → 删除），再重新安装；\n\
+             　 ② 改用与它同一张证书 + 描述文件来签名。\n\
+             注意：卸载会清掉该 App 的数据；卸载后仍可安装本工具签出的改版。"
+        ));
+    }
+    if raw.contains("MismatchedBundleIDSigningIdentifier") {
+        return Some(
+            "══ 安装被 iOS 拒绝：签名标识与 Bundle ID 不一致 ══\n\
+             某个嵌套代码（framework / appex）的签名标识 ≠ 它的 CFBundleIdentifier。\n\
+             看日志里 `重签（主可执行）：…（CFBundleIdentifier=…）` 一行是否标了 `**缺失**`，\n\
+             以及结尾的 `深签（自实现）：完成 X，失败 Y` 是否为 0 失败。"
+                .to_string(),
+        );
+    }
+    if raw.contains("ApplicationVerificationFailed") || raw.contains("InvalidSignature") {
+        return Some(
+            "══ 安装被 iOS 拒绝：签名校验失败 ══\n\
+             常见原因：签名证书与描述文件不匹配（例如描述文件的 App ID 与目标 Bundle ID 不同）、\n\
+             证书已过期/被吊销，或设备不在描述文件的设备列表里。\n\
+             请核对日志里 `描述文件：name=…；App ID=…；团队=…；目标 Bundle ID=…` 一行。"
+                .to_string(),
+        );
+    }
+    None
+}
+
 async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
     // 通路 0（免电脑，优先）：RemotePairing 隧道 → 用户态 TCP → RSD → AFC + installation_proxy。
     //
@@ -104,6 +158,9 @@ async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
             rp_hosts.push(host);
         }
     }
+    // 被 iOS **策略**拒绝的原因（例如跨 App ID 覆盖升级）：通路本身是通的，这类原因才是
+    // 真因，而用户通常只复制日志尾部 —— 收集起来，最后放进 `install error:` 一行里。
+    let mut hints: Vec<String> = Vec::new();
     if let Some(pairing) = pairing {
         for host in rp_hosts.iter().copied() {
             log_msg(&format!(
@@ -114,7 +171,13 @@ async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
                     log_msg("install: 免电脑通路安装成功");
                     return Ok(());
                 }
-                Err(e) => log_msg(&format!("install: 免电脑通路失败（{host}）：{e:#}")),
+                Err(e) => {
+                    let raw = format!("{e:#}");
+                    log_msg(&format!("install: 免电脑通路失败（{host}）：{raw}"));
+                    if let Some(hint) = explain_install_error(&raw) {
+                        hints.push(hint);
+                    }
+                }
             }
         }
     } else {
@@ -195,6 +258,17 @@ async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
                 }
             }
         }
+    }
+
+    // 通路是通的、最后被 iOS **策略**拒绝时（跨 App ID 覆盖升级等），这个原因才是真因：
+    // 优先作为最终错误抛出，让日志尾部就是「原因 + 处理办法」。
+    if hints.is_empty() {
+        if let Some(hint) = explain_install_error(&errors.join("\n")) {
+            hints.push(hint);
+        }
+    }
+    if let Some(hint) = hints.first() {
+        bail!("{hint}");
     }
 
     if errors.is_empty() {

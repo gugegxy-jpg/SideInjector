@@ -74,8 +74,29 @@ pub fn sign_bundle(
     // 每项在签名时按需自己补 Entitlements。
     let nested_template = settings.clone();
 
-    // 从 mobileprovision 提取 Entitlements 并写回签名设置
-    let entitlements = extract_profile_entitlements(&prov_data)?;
+    // 从 mobileprovision 提取 Entitlements 并写回签名设置。
+    //
+    // 这里顺带做两件必须**在签名前**完成的事（否则问题只会在设备端以「装不上」的形式暴露）：
+    //   ① 把描述文件的 **App ID** 与目标 App 的 Bundle ID 对照并打进日志 ——
+    //      `application-identifier` 由它决定，而 installd 判定
+    //      `MismatchedApplicationIdentifierEntitlement`（跨 App ID 覆盖升级）看的正是这个值；
+    //   ② 描述文件是**通配**（`TEAM.*`）时，把 `application-identifier` /
+    //      `keychain-access-groups` 改写成目标 Bundle ID（Apple 工具链的做法；
+    //      把 `TEAM.*` 原样写进签名是无效值）。
+    let target_bundle_id = bundle_id_of(app);
+    let (entitlements, profile) = extract_profile_entitlements(&prov_data)?;
+    log_msg(&format!(
+        "描述文件：name={}；App ID={}；团队={}；目标 Bundle ID={}",
+        profile.name.as_deref().unwrap_or("(未命名)"),
+        profile.app_id.as_deref().unwrap_or("(缺失)"),
+        profile.team.as_deref().unwrap_or("(未知)"),
+        target_bundle_id.as_deref().unwrap_or("(缺失)")
+    ));
+    let (entitlements, app_id_note) =
+        rewrite_wildcard_app_id(&entitlements, &profile, target_bundle_id.as_deref())?;
+    if let Some(note) = app_id_note {
+        log_msg(&format!("描述文件：{note}"));
+    }
     settings.set_entitlements_xml(SettingsScope::Main, entitlements.as_str())?;
 
     // 不要用 sign_path_in_place：对「目录型 bundle」它会先把目标文件删掉、再从源路径复制，
@@ -877,9 +898,20 @@ fn report_partial_output(out_root: &Path) {
     }
 }
 
+/// 描述文件（mobileprovision）里与「能不能装上」有关的关键信息。
+struct ProfileInfo {
+    /// 描述文件的显示名（顶层 `Name`）。
+    name: Option<String>,
+    /// `Entitlements.application-identifier`，形如 `TEAM.appid`；通配描述文件是 `TEAM.*`。
+    app_id: Option<String>,
+    /// App ID 的团队前缀（第一个 `.` 之前）。
+    team: Option<String>,
+}
+
 /// 从 .mobileprovision（CMS/DER 包裹的 XML plist）提取 Entitlements 字典，
-/// 并序列化为完整 plist XML 供 `set_entitlements_xml` 使用。
-fn extract_profile_entitlements(data: &[u8]) -> Result<String> {
+/// 并序列化为完整 plist XML 供 `set_entitlements_xml` 使用；
+/// 同时取出描述文件名 / App ID / 团队，供日志与 App ID 检查使用。
+fn extract_profile_entitlements(data: &[u8]) -> Result<(String, ProfileInfo)> {
     let plist = extract_embedded_plist(data)?;
     let value: plist::Value = plist::from_bytes(&plist)?;
     let dict = value
@@ -888,9 +920,108 @@ fn extract_profile_entitlements(data: &[u8]) -> Result<String> {
     let ents = dict
         .get("Entitlements")
         .ok_or_else(|| anyhow::anyhow!("mobileprovision 缺少 Entitlements"))?;
+
+    let app_id = ents
+        .as_dictionary()
+        .and_then(|d| d.get("application-identifier"))
+        .and_then(|v| v.as_string())
+        .map(str::to_string);
+    let info = ProfileInfo {
+        name: dict
+            .get("Name")
+            .and_then(|v| v.as_string())
+            .map(str::to_string),
+        team: app_id
+            .as_deref()
+            .and_then(|a| a.split_once('.').map(|(t, _)| t.to_string())),
+        app_id,
+    };
+
     let mut out = Vec::new();
     plist::to_writer_xml(&mut out, ents)?;
-    Ok(String::from_utf8(out)?)
+    Ok((String::from_utf8(out)?, info))
+}
+
+/// 通配描述文件的 App ID 改写 + 与目标 Bundle ID 的一致性检查。
+///
+/// 为什么必须做（设备端实测结论）：
+///   - 描述文件是**通配**的（`application-identifier = TEAM.*`）时，Apple 的工具链会把它
+///     替换成 `TEAM.<目标 Bundle ID>`；把 `TEAM.*` 原样写进签名是**无效值**；
+///   - 描述文件是**固定 App ID** 且与目标 Bundle ID 不一致时，签出来的
+///     `application-identifier` 与目标 App 对不上：设备上没有同名 App 时通常还能装上，
+///     但只要设备上已装同 Bundle ID 的 App（尤其 App Store 正版，或之前用别的证书装过的版本），
+///     installd 就会以 `MismatchedApplicationIdentifierEntitlement` 拒绝**覆盖升级**。
+///     这一点本地无法消除，只能在日志里把原因说到位，让用户知道要先卸载设备上那个 App。
+///
+/// 返回（改写后的 plist XML，需要写进日志的说明）。
+fn rewrite_wildcard_app_id(
+    entitlements_xml: &str,
+    profile: &ProfileInfo,
+    target_bundle_id: Option<&str>,
+) -> Result<(String, Option<String>)> {
+    // 拿不到 App ID 就原样使用（描述文件缺该键时 installd 会另有报错）。
+    let Some(app_id) = profile.app_id.clone() else {
+        return Ok((entitlements_xml.to_string(), None));
+    };
+    let Some((team, suffix)) = app_id.split_once('.') else {
+        return Ok((entitlements_xml.to_string(), None));
+    };
+
+    if suffix != "*" {
+        // 固定 App ID：只做一致性提示（不改写 —— 改写会超出描述文件授权）。
+        let note = match target_bundle_id {
+            Some(b) if b != suffix => Some(format!(
+                "⚠️ 该描述文件的 App ID（{app_id}）与目标 App 的 Bundle ID（{b}）**不一致**。\n\
+                 　　签出来的 application-identifier 会是 {app_id}；若设备上已装同 Bundle ID 的 App\n\
+                 　　（App Store 正版，或之前用别的证书装过的版本），iOS 会以\n\
+                 　　`MismatchedApplicationIdentifierEntitlement` 拒绝覆盖升级 —— 需先在设备上卸载它，\n\
+                 　　或改用**通配（Wildcard）**描述文件。"
+            )),
+            _ => None,
+        };
+        return Ok((entitlements_xml.to_string(), note));
+    }
+
+    // 通配：必须改写成目标 Bundle ID。
+    let Some(bundle_id) = target_bundle_id else {
+        return Ok((
+            entitlements_xml.to_string(),
+            Some(format!(
+                "⚠️ 描述文件是通配的（{app_id}），但目标 .app 没有 CFBundleIdentifier，无法改写 App ID"
+            )),
+        ));
+    };
+
+    let new_app_id = format!("{team}.{bundle_id}");
+    let mut value: plist::Value = plist::from_bytes(entitlements_xml.as_bytes())?;
+    let Some(dict) = value.as_dictionary_mut() else {
+        return Ok((entitlements_xml.to_string(), None));
+    };
+    dict.insert(
+        "application-identifier".to_string(),
+        plist::Value::String(new_app_id.clone()),
+    );
+    // `keychain-access-groups` 里通常也有 `TEAM.*`，一并换成同一个新 App ID。
+    if let Some(plist::Value::Array(groups)) = dict.get_mut("keychain-access-groups") {
+        for g in groups.iter_mut() {
+            let is_wildcard = g
+                .as_string()
+                .and_then(|s| s.strip_prefix(&format!("{team}.")))
+                .map(|rest| rest == "*")
+                .unwrap_or(false);
+            if is_wildcard {
+                *g = plist::Value::String(new_app_id.clone());
+            }
+        }
+    }
+    let mut out = Vec::new();
+    plist::to_writer_xml(&mut out, &value)?;
+    Ok((
+        String::from_utf8(out)?,
+        Some(format!(
+            "描述文件为通配（{app_id}）：已按目标 Bundle ID 改写 application-identifier → {new_app_id}"
+        )),
+    ))
 }
 
 /// 在 DER 编码的 mobileprovision 中定位连续存放的 XML plist 字节。

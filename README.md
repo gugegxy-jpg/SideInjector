@@ -220,6 +220,8 @@ project.yml                XcodeGen 规格
 | 安装失败 | 先看**环境自检**卡片：确认 49152 可连接、开发者模式已开；再看日志里的 `install error: …` |
 | 签名报 `I/O error: No such file or directory (os error 2)` | 这个错误**不带路径**（`apple-bundles` 的老问题）。请复制日志里这几类行：`重签（主可执行）：…`、`重签（资源/二进制）：…`、`重签失败（保留原签名）：…`、`深签（自实现）：完成 X，失败 Y`、以及报错前的 `[apple_…]` 行 |
 | 安装报 `MismatchedBundleIDSigningIdentifier` | 某个嵌套代码的**签名标识 ≠ 它的 bundle id**。看日志里 `重签（主可执行）：xxx（CFBundleIdentifier=…）` 一行标了 `**缺失**` 就说明该 bundle 的 Info.plist 没有 `CFBundleIdentifier`，标识无法修正 |
+| 安装报 `MismatchedApplicationIdentifierEntitlement`（跨 App ID 覆盖升级） | **不是签名问题**。设备上已装同 Bundle ID 的 App，但那个 App 的 `application-identifier`（即 App ID，形如 `TEAM.com.xxx`）与新包的**不是同一个**——iOS 不允许换证书「覆盖升级」。最常见场景：设备上装的是 **App Store 正版**同名 App。处理：**先在设备上卸载那个 App，再安装**（卸载会清掉它的数据）；或改用与它同一张证书签名。日志里已把它翻译成中文并给出两个 App ID，看结尾的 `install error:` 即可 |
+| 签名日志里 `描述文件：App ID=…；目标 Bundle ID=…` | 描述文件的 App ID 与目标 Bundle ID **不一致**时会有 `⚠️` 提示：这样签出来的包在设备上已有同名 App 时必然被拒（见上一行）。想装任意 IPA，请用**通配（Wildcard）**描述文件；工具会自动把通配 App ID 改写为 `TEAM.<目标 Bundle ID>` |
 | App 启动崩溃（注入后） | 被注入的 dylib 必须与宿主 App 用**同一张证书**重签；宿主需带 `get-task-allow` 等 entitlement |
 
 ---
@@ -227,7 +229,8 @@ project.yml                XcodeGen 规格
 ## 已知问题 / 限制
 
 1. **嵌套 bundle 已不再走 `apple-codesign` 的「整 bundle 签名」**：实测（一次 93 项的流程）它对本 IPA 里**所有带主可执行文件**的项（framework / 带可执行的 bundle）都会在中途抛**不带路径**的 `ENOENT (os error 2)`——失败的清一色是"有主可执行"的项，而成功的 30 项全是无主可执行的资源 bundle，说明它在功能正常的 bundle 签名的资源走查 / 文件搬运环节挂掉（`walk_and_seal_directory`）。现改为：这些项**只重签主可执行文件**（`MachOSigner` + `set_binary_identifier` + 嵌回原有 `CodeResources`），绕开该环节。若仍有项失败，日志会逐项给出原因与结构诊断。
-2. **安装链路已走通到 `installation_proxy`**：RP 自配对 → 隧道（`rp: 隧道已建立 …`）→ RSD 握手（64 个服务）→ AFC 上传 `/PublicStaging` + `installation_proxy` 都在正常推进；此前几次失败都停在**签名校验**（`MismatchedBundleIDSigningIdentifier`），签名修好后需要再完整验证一次安装。
+2. **安装链路已完整走通**：RP 自配对 → 隧道（`rp: 隧道已建立 …`）→ RSD 握手（64 个服务）→ AFC 分块上传 `/PublicStaging` → `installation_proxy` 安装。实机上一次 637 MB 的包已能上传完并进入 installd，**签名校验（`MismatchedBundleIDSigningIdentifier`）不再是拦路虎**；目前剩下的失败都属于**设备端策略**：`MismatchedApplicationIdentifierEntitlement` —— 设备上已有同 Bundle ID 的 App，且它是用**另一张证书**签的，iOS 拒绝换证书覆盖升级（App Store 正版同名 App 必然如此）。处理办法只有一个：**先在设备上卸载那个 App**。工具已把这类错误翻译成中文并附上两个 App ID（见排障表）。
+3. 签名阶段会打印 `描述文件：name=…；App ID=…；团队=…；目标 Bundle ID=…`。描述文件是**通配**时，工具会自动把 `application-identifier` / `keychain-access-groups` 改写成 `TEAM.<目标 Bundle ID>`（照抄 `TEAM.*` 是无效值）；描述文件是固定 App ID 且与目标 Bundle ID 不一致时会给出 `⚠️`，因为那种包在设备上已有同名 App 时必然被拒。
 3. `InstallEngine` 里旧的经典 lockdownd / usbmux 实现已是**死代码**，待清理。
 4. 注入仅支持单切片 arm64 主二进制；Fat / arm64e 未实现。
 5. 仅对普通第三方 IPA 有效；系统 App 注入无 jailbreak 不可行。

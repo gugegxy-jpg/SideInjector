@@ -15,6 +15,7 @@ mod install;
 mod ziputil;
 mod pair;
 mod bundle;
+mod logbridge;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
@@ -133,6 +134,8 @@ pub extern "C" fn si_sign_bundle(
     let pw = to_str(p12_password).unwrap_or_default();
     let prov = to_str(prov);
     let team = to_str(team_id);
+    // 打开 apple-codesign / apple-bundles 的内部日志（它们的 IO 错误不带路径）。
+    logbridge::init();
     match sign::sign_bundle(
         std::path::Path::new(&app),
         p12.as_deref(),

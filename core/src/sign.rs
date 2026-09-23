@@ -78,47 +78,26 @@ pub fn sign_bundle(
     Ok(())
 }
 
-/// 签名前诊断：apple-codesign 内部错误不带路径，这里主动把线索打出来，
-/// 便于定位到底哪个文件缺失（尤其是断链的符号链接 / 主可执行 / Info.plist 位置）。
+/// 签名前诊断：apple-codesign / apple-bundles 抛出的 IO 错误**不带路径**，
+/// 这里镜像 apple-bundles 0.21 的 bundle 判定规则，把它「将会看到的结构」打出来：
+///
+/// - 顶层结构（顶层文件数 + 各子目录及其文件数）——一眼看出目录树是否完整
+/// - 主 bundle 与每个「嵌套 bundle 候选目录」的判定结果（类型 / Info.plist 路径 / shallow）
+/// - 每个 bundle 依 CFBundleExecutable 解析出的主可执行文件是否存在
+///
+/// apple-bundles 的判定规则（0.21 源码）：
+///   shallow      = 根目录下**没有** Contents 目录
+///   info_plist   = 若 `<根>/Resources/Info.plist` 是文件 → 判为 Framework，用它；
+///                  否则若 `(<shallow ? 根 : 根/Contents>)/Info.plist` 是文件 → App / Bundle，用它
+///   嵌套候选      = 任意子目录（Framework 自身会跳过其 Resources / Versions 两个候选）
+/// 它一旦把某目录误判成 bundle，就会按上面这条路径去 `fs::read`，路径不存在即
+/// `ENOENT (os error 2)` —— 这正是签名失败的成因，所以每条读路径都在这里验一遍。
 fn diagnose_bundle(app: &Path) {
-    let root_plist = app.join("Info.plist");
-    let contents_plist = app.join("Contents").join("Info.plist");
-    log_msg(&format!(
-        "bundle 诊断：根 Info.plist 存在={} / Contents/Info.plist 存在={}",
-        root_plist.exists(),
-        contents_plist.exists()
-    ));
-
-    let plist_path = if root_plist.exists() {
-        root_plist
-    } else {
-        contents_plist
-    };
-    match fs::read(&plist_path)
-        .ok()
-        .and_then(|b| plist::from_bytes::<plist::Value>(&b).ok())
-    {
-        Some(v) => {
-            let exe = v
-                .as_dictionary()
-                .and_then(|d| d.get("CFBundleExecutable"))
-                .and_then(|x| x.as_string())
-                .unwrap_or("");
-            if exe.is_empty() {
-                log_msg("bundle 诊断：Info.plist 无 CFBundleExecutable");
-            } else {
-                let exe_path = app.join(exe);
-                log_msg(&format!(
-                    "bundle 诊断：CFBundleExecutable={exe} 存在={}",
-                    exe_path.exists()
-                ));
-            }
-        }
-        None => log_msg(&format!(
-            "bundle 诊断：无法解析 Info.plist：{}",
-            plist_path.display()
-        )),
-    }
+    report_top_level(app);
+    report_bundle(app, "主 bundle");
+    let mut candidates = 0usize;
+    find_bundle_candidates(app, app, &mut candidates, 0);
+    log_msg(&format!("bundle 诊断：嵌套 bundle 候选 {candidates} 个"));
 
     let mut files = 0usize;
     let mut links = 0usize;
@@ -130,6 +109,149 @@ fn diagnose_bundle(app: &Path) {
     ));
     for b in broken.iter().take(50) {
         log_msg(&format!("bundle 诊断：断链 {b}"));
+    }
+}
+
+/// 打印 .app 顶层结构：顶层文件数 + 各子目录（含其文件数）。
+/// 若子目录为 0，说明 IPA 是「扁平」的（解压丢了目录层级），apple-codesign 会立刻异常。
+fn report_top_level(app: &Path) {
+    let Ok(rd) = fs::read_dir(app) else {
+        log_msg(&format!("bundle 诊断：无法列出目录 {}", app.display()));
+        return;
+    };
+    let mut dirs: Vec<(String, usize)> = Vec::new();
+    let mut top_files = 0usize;
+    for e in rd.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().to_string();
+        match fs::symlink_metadata(&p) {
+            Ok(md) if md.is_dir() => dirs.push((name, count_files(&p, 5000))),
+            Ok(md) if md.file_type().is_symlink() => dirs.push((format!("{name}[链接]"), 0)),
+            _ => top_files += 1,
+        }
+    }
+    dirs.sort();
+    log_msg(&format!(
+        "bundle 诊断：顶层文件 {top_files} 个；子目录 {} 个：{}",
+        dirs.len(),
+        dirs.iter()
+            .map(|(n, c)| format!("{n}({c})"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+}
+
+/// 递归统计目录内文件数（符号链接按文件计，与 apple-bundles 的 files() 一致）。
+fn count_files(dir: &Path, cap: usize) -> usize {
+    let mut n = 0usize;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            match fs::symlink_metadata(e.path()) {
+                Ok(md) if md.is_dir() => stack.push(e.path()),
+                Ok(_) => n += 1,
+                Err(_) => {}
+            }
+            if n >= cap {
+                return n;
+            }
+        }
+    }
+    n
+}
+
+/// 按 apple-bundles 的规则判定目录能否作为 bundle，返回 (类型, Info.plist 路径)。
+fn classify_bundle(dir: &Path) -> Option<(&'static str, std::path::PathBuf)> {
+    let name = dir.file_name()?.to_string_lossy().to_string();
+    let contents = dir.join("Contents");
+    let shallow = !contents.is_dir();
+    let app_plist = if shallow {
+        dir.join("Info.plist")
+    } else {
+        contents.join("Info.plist")
+    };
+    let fw_deep = dir.join("Resources").join("Info.plist");
+    let fw_shallow = dir.join("Info.plist");
+    let fw = if !fw_deep.exists() && name.ends_with(".framework") && fw_shallow.exists() {
+        fw_shallow
+    } else {
+        fw_deep
+    };
+    if fw.is_file() {
+        return Some(("Framework", fw));
+    }
+    if app_plist.is_file() {
+        let t = if name.ends_with(".app") { "App" } else { "Bundle" };
+        return Some((t, app_plist));
+    }
+    None
+}
+
+/// 打印某个 bundle 的判定结果与主可执行文件存在性。
+fn report_bundle(dir: &Path, tag: &str) {
+    let Some((kind, plist)) = classify_bundle(dir) else {
+        log_msg(&format!("bundle 诊断：{tag} 不可判定为 bundle"));
+        return;
+    };
+    let contents = dir.join("Contents");
+    let shallow = !contents.is_dir();
+    let raw = fs::read(&plist).ok();
+    let exe = raw
+        .as_ref()
+        .and_then(|b| plist::from_bytes::<plist::Value>(b).ok())
+        .as_ref()
+        .and_then(|v| v.as_dictionary())
+        .and_then(|d| d.get("CFBundleExecutable"))
+        .and_then(|x| x.as_string())
+        .unwrap_or("")
+        .to_string();
+    let exe_path = if shallow {
+        dir.join(&exe)
+    } else {
+        contents.join(&exe)
+    };
+    log_msg(&format!(
+        "bundle 诊断：{tag} 类型={kind} shallow={shallow} Info.plist={} 可读={} 主可执行={} 存在={}",
+        plist.display(),
+        raw.is_some(),
+        if exe.is_empty() { "(无)" } else { exe.as_str() },
+        !exe.is_empty() && exe_path.exists()
+    ));
+    if kind == "Framework" && dir.join("Versions").exists() {
+        log_msg(&format!("bundle 诊断：{tag} 含 Versions 目录（会被逐个版本签名）"));
+    }
+}
+
+/// 枚举所有「能被判定为 bundle」的子目录（命中后不再深入其内部，
+/// 与 apple-bundles 的 poisoned_prefixes 行为一致）。
+fn find_bundle_candidates(root: &Path, dir: &Path, count: &mut usize, depth: usize) {
+    if depth > 8 {
+        return;
+    }
+    let Ok(rd) = fs::read_dir(dir) else { return };
+    let mut subs: Vec<std::path::PathBuf> = Vec::new();
+    for e in rd.flatten() {
+        let p = e.path();
+        if let Ok(md) = fs::symlink_metadata(&p) {
+            if md.is_dir() && !md.file_type().is_symlink() {
+                subs.push(p);
+            }
+        }
+    }
+    subs.sort();
+    for p in subs {
+        if classify_bundle(&p).is_some() {
+            *count += 1;
+            let rel = p
+                .strip_prefix(root)
+                .unwrap_or(&p)
+                .to_string_lossy()
+                .to_string();
+            report_bundle(&p, &format!("嵌套 {rel}"));
+            continue;
+        }
+        find_bundle_candidates(root, &p, count, depth + 1);
     }
 }
 

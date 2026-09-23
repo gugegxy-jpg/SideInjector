@@ -179,6 +179,35 @@ pub async fn install(
             tunnel_svcs.join("、")
         }
     ));
+
+    // ★ 关键：这条隧道暴露的是 RSD 的「remote 命名」——服务名统一带 `.shim.remote` 后缀，
+    // 例如 com.apple.afc.shim.remote / com.apple.mobile.installation_proxy.shim.remote。
+    // 而 idevice 的安装例程是按**固定名**（com.apple.afc / com.apple.mobile.installation_proxy）
+    // 去查服务表的，查不到就报「缺失」。这里给缺的名字补上别名（指向同一个服务、同一端口），
+    // 两边就对上了——隧道本身是好的，不用重建。
+    for (canonical, remote) in [
+        ("com.apple.afc", "com.apple.afc.shim.remote"),
+        (
+            "com.apple.mobile.installation_proxy",
+            "com.apple.mobile.installation_proxy.shim.remote",
+        ),
+        (
+            "com.apple.mobile.house_arrest",
+            "com.apple.mobile.house_arrest.shim.remote",
+        ),
+    ] {
+        if handshake.services.contains_key(canonical) {
+            continue;
+        }
+        if let Some(svc) = handshake.services.get(remote).cloned() {
+            log_msg(&format!(
+                "rp: 服务别名 {canonical} ← {remote}（port {}）",
+                svc.port
+            ));
+            handshake.services.insert(canonical.to_string(), svc);
+        }
+    }
+
     for name in ["com.apple.afc", "com.apple.mobile.installation_proxy"] {
         log_msg(&format!(
             "rp: 服务 {name} {}",
@@ -191,7 +220,7 @@ pub async fn install(
     }
     if !handshake.services.contains_key("com.apple.afc") {
         bail!(
-            "RSD 未提供 com.apple.afc（本隧道共 {} 个服务）：把上面「rp: RSD 服务」几行发出来，据此改用实际可用的上传/安装服务",
+            "RSD 未提供 com.apple.afc（连 .shim.remote 变体也没有；本隧道共 {} 个服务）",
             names.len()
         );
     }
@@ -200,7 +229,7 @@ pub async fn install(
         .contains_key("com.apple.mobile.installation_proxy")
     {
         bail!(
-            "RSD 未提供 com.apple.mobile.installation_proxy（本隧道共 {} 个服务）：把上面「rp: RSD 服务」几行发出来",
+            "RSD 未提供 com.apple.mobile.installation_proxy（连 .shim.remote 变体也没有；本隧道共 {} 个服务）",
             names.len()
         );
     }

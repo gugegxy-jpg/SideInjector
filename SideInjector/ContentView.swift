@@ -351,16 +351,14 @@ struct ContentView: View {
                 envRow("LocalDevVPN", env.vpnUp
                        ? "已连接 · \(env.vpnDetail)"
                        : "未连接 · \(env.vpnDetail)")
-                if !env.portLines.isEmpty {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("隧道端口探测").font(.caption).foregroundStyle(.secondary)
-                        ForEach(env.portLines, id: \.self) { line in
-                            Text(line)
-                                .font(.system(.caption2, design: .monospaced))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
-                }
+                // 逐条端口探测结果不再铺在界面上（3 个候选地址通常 1 个可用、2 个超时，
+                // 一列红叉很扎眼）。这里只给一句结论；逐条明细写进后台日志（「查看全部」可见）。
+                let okPorts = env.portLines.filter { $0.contains("可连接") || $0.contains("收到") }
+                envRow("隧道端口", env.portLines.isEmpty
+                       ? "未检测"
+                       : (okPorts.isEmpty
+                          ? "49152 无可用出口 · 请确认 LocalDevVPN 已连接"
+                          : "49152 可用（\(okPorts.count) 个地址）"))
             }
         }
         .onAppear {
@@ -394,7 +392,8 @@ struct ContentView: View {
             LogStore.shared.append("环境自检：iOS \(snap.osVersion)（\(snap.osBuild)）"
                                    + (snap.selfPairCapable ? " · 支持设备端自配对" : " · 需配对文件"))
             LogStore.shared.append("环境自检：LocalDevVPN \(snap.vpnUp ? "已连接" : "未连接") · \(snap.vpnDetail)")
-            for line in snap.portLines { LogStore.shared.append("tunnel-probe: \(line)") }
+            // 逐条端口探测只进后台日志（界面上只显示一句结论）。
+            for line in snap.portLines { LogStore.shared.appendDetail("tunnel-probe: \(line)") }
         }
     }
 

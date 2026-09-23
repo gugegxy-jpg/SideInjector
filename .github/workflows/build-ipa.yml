@@ -15,6 +15,9 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    # 创建 Release 需要写权限（Release 资源下载通常比 Actions artifact 快得多，且支持断点续传）
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -108,8 +111,31 @@ jobs:
           cp -R build/SideInjector.xcarchive/Products/Applications/SideInjector.app build/ipa/Payload/
           cd build/ipa && zip -r ../SideInjector.ipa Payload
 
-      - name: Upload IPA
+      - name: Upload IPA (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: SideInjector.ipa
-          path: build/SideInjector.ipa
+          # 未签名流程产物在 build/，签名导出流程在 build/ipa/，两个都覆盖
+          path: |
+            build/SideInjector.ipa
+            build/ipa/SideInjector.ipa
+          if-no-files-found: error
+
+      # 额外发布到 Release：Release 资源走另一套 CDN，通常比 Actions artifact 快很多，
+      # 而且支持断点续传（可用 aria2c / IDM 多线程下载）。
+      # 固定下载地址：https://github.com/<owner>/<repo>/releases/latest/download/SideInjector.ipa
+      - name: Publish Release (latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IPA=build/SideInjector.ipa
+          [ -f "$IPA" ] || IPA=build/ipa/SideInjector.ipa
+          ls -lh "$IPA"
+          if ! command -v gh >/dev/null 2>&1; then
+            echo "gh CLI 不可用，跳过 Release 发布（artifact 仍可用）"
+            exit 0
+          fi
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest "$IPA" \
+            --title "SideInjector 最新构建" \
+            --notes "commit ${GITHUB_SHA:0:7} · $(date -u +%Y-%m-%dT%H:%MZ)"

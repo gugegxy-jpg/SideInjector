@@ -148,7 +148,18 @@ pub fn sign_bundle(
             continue;
         }
 
-        // ①-b 其余项：没有主可执行的资源 bundle（只封资源）、以及注入的 .dylib。
+        // ①-b-1 没有 Info.plist 的目录（原包就没带，如 GoogleCast 的
+        //       `GoogleCastUIResources.bundle` / `GoogleCastCoreResources.bundle` /
+        //       根目录的 `Settings.bundle`）：它不算可签名的 bundle，apple-bundles 直接拒绝。
+        //       保持原样即可（iOS 只当普通资源），不该记成「失败」让日志变吓人。
+        if is_dir && info_plist_of(item).is_none() {
+            log_msg(&format!(
+                "  跳过（无 Info.plist，非可签名 bundle，保持原样）：{name}"
+            ));
+            continue;
+        }
+
+        // ①-b-2 其余项：没有主可执行的资源 bundle（只封资源）、以及注入的 .dylib。
         log_msg(&format!("  重签（资源/二进制）：{name}"));
         match sign_in_place(item, &nested_settings) {
             Ok(()) => {}
@@ -178,6 +189,9 @@ pub fn sign_bundle(
         ));
     }
 
+    // 主 App 自己也要清一遍分离签名残留（理由同 sign_nested_executable）。
+    clean_stale_signature_files(app);
+
     // ② 再浅签主 App：嵌套代码保持刚刚重签的版本（浅签不会覆盖它们），
     //    同时把最终内容整体封进主 App 的 CodeResources。
     let mut shallow = settings.clone();
@@ -205,8 +219,70 @@ pub fn sign_bundle(
     fs::rename(&out, app).with_context(|| format!("替换回 .app 失败：{}", app.display()))?;
     let _ = fs::remove_dir_all(&out_root);
 
+    // ④ 收尾自证：把「最终会打进 IPA 的那份 app」逐项读回签名标识，与 bundle id 比对。
+    verify_signed_identifiers(app);
+
     log_msg("apple-codesign 库签名完成");
     Ok(())
+}
+
+/// 收尾自证：把最终打进 IPA 的那份 app 里，每个代码项的主可执行签名标识读回来，
+/// 与它的 `CFBundleIdentifier` 比对。installd 的
+/// `MismatchedBundleIDSigningIdentifier` 校验的就是这条规则；这里提前把结果打出来，
+/// 免得装到一半失败还要回头猜「到底是哪一项没签上」。
+fn verify_signed_identifiers(app: &Path) {
+    let mut checked = 0usize;
+    let mut bad = 0usize;
+
+    // 主 App 自己
+    if let Some((exe, want)) = main_executable_of(app).zip(bundle_id_of(app)) {
+        if let Ok(data) = fs::read(&exe) {
+            checked += 1;
+            match code_directory_identifier(&data) {
+                Some(got) if got == want => {}
+                other => {
+                    bad += 1;
+                    log_msg(&format!(
+                        "⚠️ 标识自检：主 App 实际「{}」，期望「{want}」",
+                        other.unwrap_or_else(|| "(读不到)".to_string())
+                    ));
+                }
+            }
+        }
+    }
+
+    // 每个嵌套项
+    for item in collect_signable_nested(app) {
+        if !item.is_dir() {
+            continue;
+        }
+        let (Some(exe), Some(want)) = (main_executable_of(&item), bundle_id_of(&item)) else {
+            continue;
+        };
+        let Ok(data) = fs::read(&exe) else { continue };
+        checked += 1;
+        let name = item
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match code_directory_identifier(&data) {
+            Some(got) if got == want => {}
+            Some(got) => {
+                bad += 1;
+                log_msg(&format!(
+                    "⚠️ 标识自检：{name} 实际「{got}」，期望「{want}」（installd 会以此拒绝）"
+                ));
+            }
+            None => {
+                bad += 1;
+                log_msg(&format!("⚠️ 标识自检：{name} 读不到签名标识"));
+            }
+        }
+    }
+
+    log_msg(&format!(
+        "签名标识自检：检查 {checked} 项，不匹配 {bad} 项（0 表示每个代码项的签名标识都等于它的 bundle id）"
+    ));
 }
 
 /// 收集需要单独重签的嵌套代码：`.framework` / `.appex` / `.bundle` / `.xpc` / `.app`
@@ -305,11 +381,15 @@ const EMPTY_ENTITLEMENTS: &str = concat!(
 
 /// 重签一个 bundle 的**主可执行文件**（不重签整个 bundle，理由见文件头）。
 ///
-/// 只做三件必须的事：
-///   1. 签名标识显式设为该 bundle 的 `CFBundleIdentifier`（installd 会校验）；
-///   2. 把该 bundle 原有的 `_CodeSignature/CodeResources` 原样嵌回签名
+/// 做四件必须的事：
+///   1. 清掉 `_CodeSignature/` 下的**分离签名残留**（第三方打包工具留下的
+///      `CodeDirectory` / `CodeRequirements` / `CodeSignature`）。Security.framework
+///      一旦看到这些文件会**优先**采用它们，我们刚嵌进 Mach-O 的新签名就被忽略，
+///      标识仍是旧值 → installd 报 `MismatchedBundleIDSigningIdentifier`；
+///   2. 签名标识显式设为该 bundle 的 `CFBundleIdentifier`（installd 会校验）；
+///   3. 把该 bundle 原有的 `_CodeSignature/CodeResources` 原样嵌回签名
 ///      （主可执行本来就不在里面，资源没动 → 封印依旧成立）；
-///   3. 扩展带上主 App 的授权（描述文件允许的子集），framework / dylib 清空授权。
+///   4. 扩展带上主 App 的授权（描述文件允许的子集），framework / dylib 清空授权。
 fn sign_nested_executable(
     exe: &Path,
     bundle: &Path,
@@ -318,6 +398,9 @@ fn sign_nested_executable(
     app_entitlements: &str,
     extension: bool,
 ) -> Result<()> {
+    // 先清掉第三方工具留下的「分离签名」残留（见函数说明）。
+    clean_stale_signature_files(bundle);
+
     let data = fs::read(exe).with_context(|| format!("读取主可执行失败：{}", exe.display()))?;
 
     let mut s = template.clone();
@@ -343,6 +426,23 @@ fn sign_nested_executable(
     let mut signed = Vec::with_capacity(data.len() + (1 << 17));
     signer.write_signed_binary(&s, &mut signed)?;
 
+    // 自证：把刚生成的签名里的 CodeDirectory 标识读回来，和期望值比对。
+    // （installd 的 `MismatchedBundleIDSigningIdentifier` 校验的就是这个值。）
+    match (code_directory_identifier(&signed), bundle_id) {
+        (Some(got), Some(want)) if got == want => {
+            log_msg(&format!("    标识自检 ✓ {want}"));
+        }
+        (Some(got), want) => {
+            log_msg(&format!(
+                "    ⚠️ 标识自检 ✗ 实际「{got}」，期望「{}」",
+                want.unwrap_or("(无)")
+            ));
+        }
+        (None, _) => {
+            log_msg("    ⚠️ 标识自检 ✗ 读不回来（新签名可能没写进去）");
+        }
+    }
+
     // 原子替换：先写同目录的临时文件（并保留可执行位），再 rename 覆盖原文件，
     // 避免写一半失败把二进制写坏。
     let fname = exe
@@ -357,8 +457,113 @@ fn sign_nested_executable(
     Ok(())
 }
 
+/// 删掉 `_CodeSignature/` 下除 `CodeResources` 外的残留文件（分离签名）。
+///
+/// 为什么必须删：`Security.framework` 校验 bundle 时，若 `_CodeSignature/` 里存在这类
+/// 分离签名文件（`CodeDirectory` / `CodeRequirements` / `CodeSignature`），它会**优先**
+/// 采用分离签名，而不是 Mach-O 里嵌入的那份 —— 于是我们刚写进去的新标识被忽略，
+/// 旧标识（第三方工具按二进制名打的，如 `KAPinField`）继续生效，
+/// installd 就报 `MismatchedBundleIDSigningIdentifier`。
+///
+/// 删除是安全的：CodeResources 规则里 `^_CodeSignature/` 被显式排除，
+/// 这些文件本来就不在封印范围内，删掉不会让资源封印失效。
+fn clean_stale_signature_files(bundle: &Path) -> usize {
+    let dir = bundle.join("_CodeSignature");
+    let Ok(rd) = fs::read_dir(&dir) else { return 0 };
+    let mut removed = 0usize;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if name == "CodeResources" {
+            continue;
+        }
+        let p = e.path();
+        let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let done = if is_dir {
+            fs::remove_dir_all(&p).is_ok()
+        } else {
+            fs::remove_file(&p).is_ok()
+        };
+        if done {
+            removed += 1;
+            log_msg(&format!(
+                "    清理残留签名文件 {}/{}（分离签名会让 iOS 忽略新嵌入的签名）",
+                bundle
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                name
+            ));
+        }
+    }
+    removed
+}
+
+/// 从 Mach-O 字节里读回 CodeDirectory 的标识（`code_directory_identifier` 自证用）。
+///
+/// 结构：Mach-O 头 → 加载命令里的 `LC_CODE_SIGNATURE`(0x1d) 给出签名数据偏移 →
+/// 该处是**大端**的超级块（magic `0xfade0cc0`）→ 索引表里 type=0 即 CodeDirectory
+/// （magic `0xfade0c02`）→ 其 `identOffset` 处是 C 字符串形式的标识。
+/// 自己解析的原因：apple-codesign 没有公开「读标识」的接口，
+/// 而这是唯一能自证「新签名是否真的生效」的办法。
+fn code_directory_identifier(macho: &[u8]) -> Option<String> {
+    fn be(b: &[u8], off: usize) -> Option<u32> {
+        let s = b.get(off..off + 4)?;
+        Some(u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+    }
+    fn le(b: &[u8], off: usize) -> Option<u32> {
+        let s = b.get(off..off + 4)?;
+        Some(u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    }
+    // 只处理 64 位、小端的单架构 Mach-O（本项目签的都是这种）。
+    if le(macho, 0)? != 0xfeed_facf {
+        return None;
+    }
+    let ncmds = le(macho, 16)? as usize;
+    let mut off = 32usize;
+    for _ in 0..ncmds {
+        let cmd = le(macho, off)?;
+        let cmdsize = le(macho, off + 4)? as usize;
+        if cmd == 0x1d {
+            // LC_CODE_SIGNATURE
+            let dataoff = le(macho, off + 8)? as usize;
+            let datasize = le(macho, off + 12)? as usize;
+            let blob = macho.get(dataoff..dataoff.checked_add(datasize)?)?;
+            if be(blob, 0)? != 0xfade_0cc0 {
+                return None;
+            }
+            let count = be(blob, 8)? as usize;
+            for i in 0..count {
+                let entry = 12 + i * 8;
+                if be(blob, entry)? != 0 {
+                    continue; // 0 = CSSLOT_CODEDIRECTORY
+                }
+                let cd_off = be(blob, entry + 4)? as usize;
+                let cd = blob.get(cd_off..)?;
+                if be(cd, 0)? != 0xfade_0c02 {
+                    return None;
+                }
+                // magic/length/version/flags/hashOffset 之后就是 identOffset。
+                let ident_off = be(cd, 20)? as usize;
+                let bytes = cd.get(ident_off..)?;
+                let end = bytes.iter().position(|&b| b == 0)?;
+                return String::from_utf8(bytes[..end].to_vec()).ok();
+            }
+            return None;
+        }
+        if cmdsize < 8 {
+            return None;
+        }
+        off = off.checked_add(cmdsize)?;
+    }
+    None
+}
+
 /// 就地把一个代码项（bundle 或 dylib）重签：签进临时目录，成功后再整体替换回去。
 fn sign_in_place(path: &Path, settings: &SigningSettings) -> Result<()> {
+    if path.is_dir() {
+        // 同样清掉分离签名残留（理由见 sign_nested_executable）。
+        clean_stale_signature_files(path);
+    }
     let parent = path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("无法取得父目录：{}", path.display()))?;

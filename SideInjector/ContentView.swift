@@ -5,42 +5,22 @@ struct ContentView: View {
     @EnvironmentObject var log: LogStore
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var presentingShare = false
+    @State private var tab = 0
     @ObservedObject private var pairing = PairingController.shared
+    @ObservedObject private var certs = CertStore.shared
 
     var body: some View {
-        // 用 ZStack 让背景作为「兄弟层」铺满全屏（含安全区），内容层照常尊重安全区，
-        // 避免把背景当 .background 时安全区延伸失效、灵动岛/Home 条区域露出系统黑底。
+        // 背景作为「兄弟层」铺满全屏（含安全区）；内容层尊重安全区。
         ZStack(alignment: .top) {
             AppBackground()
                 .ignoresSafeArea()
-            ScrollView {
-                VStack(spacing: 18) {
-                    header.cascadeItem(0)
-                    certCard.cascadeItem(1)
-                    inputCard.cascadeItem(2)
-                    pairingCard
-                    if model.busy || model.stageIndex >= 0 {
-                        progressCard.transition(.cardAppear)
-                    }
-                    actionButton.cascadeItem(4)
-                    if let _ = model.shareItem {
-                        Button {
-                            presentingShare = true
-                        } label: {
-                            Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
-                        }
-                        .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
-                        .transition(.cardAppear)
-                    }
-                    logCard.cascadeItem(5)
+            VStack(spacing: 0) {
+                Group {
+                    if tab == 0 { homeTab } else { LibraryView() }
                 }
-                .padding(20)
-                // iPhone 全宽；iPad 限宽成居中列（参照 SideInstaller 全宽自适应，
-                // 这里给 iPad 一个可读最大列宽，避免超宽拉伸）。
-                .frame(maxWidth: hSize == .regular ? CGFloat(900) : .infinity,
-                       maxHeight: .infinity, alignment: .top)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                bottomTabBar
             }
-            .scrollDismissesKeyboard(.interactively)
         }
         .navigationBarHidden(true)
         .preferredColorScheme(.dark)
@@ -54,6 +34,70 @@ struct ContentView: View {
                 ShareSheet(activityItems: [url])
             }
         }
+    }
+
+    // MARK: - 主页
+
+    private var homeTab: some View {
+        ScrollView {
+            VStack(spacing: 18) {
+                header.cascadeItem(0)
+                certCard.cascadeItem(1)
+                inputCard.cascadeItem(2)
+                pairingCard
+                if model.busy || model.stageIndex >= 0 {
+                    progressCard.transition(.cardAppear)
+                }
+                actionButton.cascadeItem(4)
+                if let _ = model.shareItem {
+                    Button {
+                        presentingShare = true
+                    } label: {
+                        Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
+                    }
+                    .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
+                    .transition(.cardAppear)
+                }
+                logCard.cascadeItem(5)
+            }
+            .padding(20)
+            .padding(.bottom, 12)
+            // iPhone 全宽；iPad 限宽成居中列（参照 SideInstaller 全宽自适应，
+            // 这里给 iPad 一个可读最大列宽，避免超宽拉伸）。
+            .frame(maxWidth: hSize == .regular ? CGFloat(900) : .infinity,
+                   maxHeight: .infinity, alignment: .top)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .scrollIndicators(.hidden)   // 不显示右侧滚动条
+    }
+
+    // MARK: - 底部页签
+
+    private var bottomTabBar: some View {
+        HStack(spacing: 0) {
+            tabButton(0, "主页", "house.fill")
+            tabButton(1, "库", "books.vertical.fill")
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+        .background(.ultraThinMaterial)
+        .overlay(Divider(), alignment: .top)
+    }
+
+    private func tabButton(_ idx: Int, _ title: String, _ icon: String) -> some View {
+        Button {
+            withAnimation(.snappy(duration: 0.22)) { tab = idx }
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 18, weight: .semibold))
+                Text(title).font(.caption2.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .foregroundStyle(tab == idx ? Theme.accent : Color.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - 头部
@@ -72,22 +116,28 @@ struct ContentView: View {
     private var certCard: some View {
         PanelCard {
             VStack(alignment: .leading, spacing: 12) {
-                sectionTitle("开发证书", systemImage: "folder.fill.badge.gear")
-                FileRow(title: "P12 证书", url: $model.certP12)
-                Divider()
-                SecureField("P12 密码", text: $model.certPass)
-                    .submitLabel(.done)
-                    .textContentType(.password)
-                    .fieldBackground()
-                    .toolbar {
-                        ToolbarItem(placement: .keyboard) {
-                            Button("完成") { hideKeyboard() }
+                sectionTitle("开发证书（选择「库」中已保存的证书）", systemImage: "folder.fill.badge.gear")
+                if certs.certs.isEmpty {
+                    Text("还没有保存的证书：请到「库」页签添加并保存。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Picker("证书", selection: $model.selectedCertID) {
+                        Text("请选择").tag(UUID?.none)
+                        ForEach(certs.certs) { c in
+                            Text(c.name).tag(Optional(c.id))
                         }
                     }
-                Divider()
-                FileRow(title: "描述文件 (mobileprovision)", url: $model.profile)
-                Divider()
-                FileRow(title: "配对文件 (iOS 18–26 需要)", url: $model.pairingFile)
+                    .pickerStyle(.menu)
+                    .tint(Theme.accent)
+                    if let cert = model.selectedCert {
+                        Text("描述文件：\(URL(fileURLWithPath: cert.provPath).lastPathComponent)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
             }
         }
     }
@@ -115,6 +165,8 @@ struct ContentView: View {
                 TextField("显示名称（留空不改）", text: $model.displayName)
                     .textFieldStyle(.plain)
                     .fieldBackground()
+                Divider()
+                FileRow(title: "配对文件 (iOS 18–26 需要)", url: $model.pairingFile)
             }
         }
     }
@@ -198,9 +250,9 @@ struct ContentView: View {
                     }
                 }
                 VStack(spacing: 0) {
-                    ForEach(Array(model.stages.enumerated()), id: \.offset) { idx, title in
+                    ForEach(Array(model.displayStages.enumerated()), id: \.offset) { idx, title in
                         stepRow(idx: idx, title: title)
-                        if idx < model.stages.count - 1 {
+                        if idx < model.displayStages.count - 1 {
                             Divider().padding(.leading, 26)
                         }
                     }
@@ -314,6 +366,7 @@ struct ContentView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(minHeight: 160, maxHeight: 300)
+                .scrollIndicators(.hidden)
             }
         }
     }

@@ -12,42 +12,39 @@ struct ContentView: View {
             ZStack {
                 AppBackground()
                     .ignoresSafeArea()
-                // 外层 VStack 填充 ScrollView 宽度，内层列由其默认 .center 水平居中，
-                // 避免 SwiftUI 默认 .topLeading 在 iPad 上把内容顶到左边、右侧留白（参照 SideInstaller）。
+                // 关键：让 ScrollView 填满 ZStack 的整个高度，否则内容比屏幕短时
+                // ZStack 会把它竖直居中，导致上下露出大块背景（黑块）。
                 ScrollView {
-                    VStack(spacing: 0) {
-                        VStack(spacing: 18) {
-                            header.cascadeItem(0)
-                            certCard.cascadeItem(1)
-                            inputCard.cascadeItem(2)
-                            pairingCard
-                            if model.busy || model.stageIndex >= 0 {
-                                progressCard.transition(.cardAppear)
-                            }
-                            actionButton.cascadeItem(4)
-                            if let _ = model.shareItem {
-                                Button {
-                                    presentingShare = true
-                                } label: {
-                                    Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
-                                }
-                                .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
-                                .transition(.cardAppear)
-                            }
-                            logCard.cascadeItem(5)
+                    VStack(spacing: 18) {
+                        header.cascadeItem(0)
+                        certCard.cascadeItem(1)
+                        inputCard.cascadeItem(2)
+                        pairingCard
+                        if model.busy || model.stageIndex >= 0 {
+                            progressCard.transition(.cardAppear)
                         }
-                        .padding(20)
-                        // iPhone 全宽；iPad 限宽成居中列（参照 SideInstaller 全宽自适应，
-                        // 这里给 iPad 一个可读最大列宽，避免超宽拉伸）。
-                        .frame(maxWidth: hSize == .regular ? CGFloat(900) : .infinity)
-                        Spacer(minLength: 0)
+                        actionButton.cascadeItem(4)
+                        if let _ = model.shareItem {
+                            Button {
+                                presentingShare = true
+                            } label: {
+                                Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
+                            }
+                            .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
+                            .transition(.cardAppear)
+                        }
+                        logCard.cascadeItem(5)
                     }
-                    .frame(maxWidth: .infinity)
-                    .animation(.smooth(duration: 0.35), value: model.busy)
-                    .animation(.smooth(duration: 0.35), value: model.stageIndex)
-                    .animation(.smooth(duration: 0.35), value: model.shareItem != nil)
+                    .padding(20)
+                    // iPhone 全宽；iPad 限宽成居中列（参照 SideInstaller 全宽自适应，
+                    // 这里给 iPad 一个可读最大列宽，避免超宽拉伸）。
+                    .frame(maxWidth: hSize == .regular ? CGFloat(900) : .infinity)
                 }
                 .scrollDismissesKeyboard(.interactively)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .animation(.smooth(duration: 0.35), value: model.busy)
+                .animation(.smooth(duration: 0.35), value: model.stageIndex)
+                .animation(.smooth(duration: 0.35), value: model.shareItem != nil)
             }
             .navigationBarHidden(true)
             .preferredColorScheme(.dark)

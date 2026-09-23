@@ -185,25 +185,11 @@ struct ContentView: View {
         PanelCard {
             VStack(alignment: .leading, spacing: 12) {
                 sectionTitle("输入", systemImage: "doc.badge.plus")
-                // IPA 改为「导入一次即入库，之后像选证书一样下拉选择」。
+                // IPA：导入后入库，点条目选中、垃圾桶删除。
+                // 这里不用 Picker(.menu)：它的标签不参与截断，文件名一长就会把按钮挤走/换行超框。
                 HStack(spacing: 10) {
                     Text("IPA 文件").foregroundStyle(.primary)
                     Spacer(minLength: 8)
-                    if model.savedIPAs.isEmpty {
-                        Text("未选择（请先导入）")
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    } else {
-                        Picker("", selection: $model.ipa) {
-                            Text("请选择").tag(URL?.none)
-                            ForEach(model.savedIPAs, id: \.self) { u in
-                                Text(Model.displayName(for: u)).tag(Optional(u))
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                        .lineLimit(1)
-                    }
                     Button {
                         let picker = DocumentPicker(types: [UTType(filenameExtension: "ipa") ?? .data, .data]) { urls in
                             model.importIPA(urls.first)
@@ -216,6 +202,38 @@ struct ContentView: View {
                     .buttonStyle(.bordered)
                 }
                 .onAppear { model.refreshSavedIPAs() }
+
+                if model.savedIPAs.isEmpty {
+                    Text("还没有导入 IPA：点「导入」选择文件（会保存在 App 内，之后可随时切换或删除）。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(model.savedIPAs, id: \.self) { u in
+                            HStack(spacing: 8) {
+                                Image(systemName: model.ipa == u ? "largecircle.fill.circle" : "circle")
+                                    .foregroundStyle(model.ipa == u ? Theme.accent : Color.secondary)
+                                Text(Model.displayName(for: u))
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer(minLength: 6)
+                                Button {
+                                    model.removeSavedIPA(u)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                }
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { model.ipa = u }
+                            .frame(minHeight: 32)
+                        }
+                    }
+                }
+
                 Divider()
                 Button {
                     let picker = DocumentPicker(types: [UTType(filenameExtension: "dylib") ?? .data, .data],
@@ -224,9 +242,9 @@ struct ContentView: View {
                     }
                     topRootVC()?.present(picker, animated: true)
                 } label: {
-                    HStack {
+                    HStack(spacing: 8) {
                         Text("要注入的 dylib（可多选）").foregroundStyle(.primary)
-                        Spacer()
+                        Spacer(minLength: 8)
                         Text(model.dylibs.isEmpty ? "未选择" : "\(model.dylibs.count) 个")
                             .foregroundStyle(.secondary)
                     }
@@ -240,6 +258,7 @@ struct ContentView: View {
                                 Text(Model.displayName(for: u))
                                     .font(.caption)
                                     .lineLimit(1)
+                                    .truncationMode(.middle)
                                 Spacer(minLength: 6)
                                 Button {
                                     model.dylibs.removeAll { $0 == u }

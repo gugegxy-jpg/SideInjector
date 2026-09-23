@@ -259,6 +259,16 @@ final class Model: ObservableObject {
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
+    /// 删除一个已导入的 IPA：从持久目录移除并刷新列表；若它正被选中则清空选择。
+    func removeSavedIPA(_ url: URL) {
+        if ipa == url { ipa = nil }
+        if Self.isOwnedInput(url) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        refreshSavedIPAs()
+        LogStore.shared.append("已删除导入的 IPA：\(Self.displayName(for: url))")
+    }
+
     /// 选择 dylib 后立刻落盘到持久目录（可多选）。
     func importDylibs(_ urls: [URL]) {
         guard !urls.isEmpty else { return }

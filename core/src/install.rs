@@ -75,9 +75,42 @@ pub fn install_ipa(ipa: &Path) -> Result<()> {
 }
 
 async fn install_async(ipa: &Path) -> Result<()> {
-    let stream = TcpStream::connect((Ipv4Addr::LOCALHOST, RSD_PORT))
+    // 先做原始探测再握手。原因：`RsdHandshake` 内部第一步就是 HTTP 升级，
+    // 一旦对端不是 remoted（例如 loopback VPN 只转发特定端口、或那个端口不是 RSD），
+    // 只会得到一句 "Connection reset by peer"，看不出对端到底是什么。
+    // 这里直接发标准升级请求并打印真实响应，同时多试几个 loopback VPN 常用地址。
+    let mut rsd_host = Ipv4Addr::LOCALHOST;
+    let mut rsd_ok = false;
+    let mut notes: Vec<String> = Vec::new();
+    for host in probe_hosts() {
+        let (ok, note) = probe_endpoint(host, RSD_PORT, true).await;
+        log_msg(&format!("install: RSD 探测 {note}"));
+        notes.push(note);
+        if ok && !rsd_ok {
+            rsd_host = host;
+            rsd_ok = true;
+        }
+    }
+    // 经典通路顺手探一下（只探回环），用于判断「该走哪条协议」而不是反复试错。
+    for port in [62078u16, 27015u16] {
+        let (_, note) = probe_endpoint(Ipv4Addr::LOCALHOST, port, false).await;
+        log_msg(&format!("install: 端口探测 {note}"));
+    }
+    if !rsd_ok {
+        bail!(
+            "本机找不到可用的 RSD 端点（49152）。\n\
+             探测结果：{}\n\
+             若 49152 能连上但对升级请求不应答/直接断开，说明它不是 remoted \
+             （常见于 loopback VPN 只转发特定端口）。请把上面 install: 开头的几行日志发出来，\
+             并确认 loopback VPN（StosVPN / SideStore 描述文件）已开启。",
+            notes.join("；")
+        );
+    }
+    log_msg(&format!("install: 使用 RSD 端点 {rsd_host}:{RSD_PORT}"));
+
+    let stream = TcpStream::connect((rsd_host, RSD_PORT))
         .await
-        .with_context(|| format!("连接 RSD 失败（127.0.0.1:{RSD_PORT}）"))?;
+        .with_context(|| format!("连接 RSD 失败（{rsd_host}:{RSD_PORT}）"))?;
     let mut handshake = RsdHandshake::new(stream).await.context("RSD 握手失败")?;
     log_msg(&format!(
         "install: RSD 握手成功（uuid={}，协议 v{}，服务 {} 个）",
@@ -112,7 +145,7 @@ async fn install_async(ipa: &Path) -> Result<()> {
     );
 
     log_msg("install: 上传到 /PublicStaging 并安装（AFC + installation_proxy）…");
-    let mut rsd = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    let mut rsd = IpAddr::V4(rsd_host);
     install_package_with_callback_rsd(
         &mut rsd,
         &mut handshake,
@@ -132,4 +165,65 @@ async fn install_async(ipa: &Path) -> Result<()> {
     .context("安装失败（AFC 上传或 installation_proxy 安装）")?;
 
     Ok(())
+}
+
+/// loopback VPN 把设备自身服务暴露出来的常见地址（回环 + StosVPN 常用的 10.7.0.x）。
+fn probe_hosts() -> Vec<Ipv4Addr> {
+    vec![
+        Ipv4Addr::LOCALHOST,
+        Ipv4Addr::new(10, 7, 0, 1),
+        Ipv4Addr::new(10, 7, 0, 2),
+    ]
+}
+
+/// 探测一个端点：TCP 连接 →（RSD 端口则）发送标准 RSD 升级请求 → 读响应。
+///
+/// 返回 `(是否像 RSD, 描述)`；描述直接进日志。判据：响应用 `HTTP/` 开头即认作 RSD
+/// （remoted 会回 `HTTP/1.1 101 Switching Protocols`）。
+async fn probe_endpoint(host: Ipv4Addr, port: u16, rsd_http: bool) -> (bool, String) {
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let addr = std::net::SocketAddr::from((host, port));
+    let mut stream = match tokio::time::timeout(Duration::from_millis(1500), TcpStream::connect(addr)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return (false, format!("{host}:{port} 连接失败：{e}")),
+        Err(_) => return (false, format!("{host}:{port} 连接超时（1.5s）")),
+    };
+    if !rsd_http {
+        return (true, format!("{host}:{port} TCP 可连接"));
+    }
+
+    let req = format!(
+        "GET / HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: PTTH/1.0\r\n\r\n"
+    );
+    if let Err(e) = stream.write_all(req.as_bytes()).await {
+        return (false, format!("{host}:{port} 已连接，但发送升级请求失败：{e}"));
+    }
+    let mut buf = vec![0u8; 512];
+    match tokio::time::timeout(Duration::from_millis(1500), stream.read(&mut buf)).await {
+        Ok(Ok(0)) => (
+            false,
+            format!("{host}:{port} 请求后对端立即关闭（0 字节）→ 不是 RSD"),
+        ),
+        Ok(Ok(n)) => {
+            let text = String::from_utf8_lossy(&buf[..n]).replace(['\r', '\n'], " ");
+            let head: String = text.chars().take(160).collect();
+            let hex: String = buf[..n.min(32)]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let looks_rsd = text.starts_with("HTTP/");
+            (
+                looks_rsd,
+                format!("{host}:{port} 收到 {n} 字节，响应：{head}；hex={hex}"),
+            )
+        }
+        Ok(Err(e)) => (false, format!("{host}:{port} 请求后读取失败：{e}")),
+        Err(_) => (
+            false,
+            format!("{host}:{port} 已连接，但 1.5s 内无响应 → 不是 RSD（疑似被中间层吞掉）"),
+        ),
+    }
 }

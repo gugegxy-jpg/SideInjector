@@ -63,6 +63,10 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       **路径作用域标识**（`SettingsScope::Path("Frameworks/xxx.framework/xxx")`），浅签时用我们给的值
 - [x] **签名标识自检**：签完自行解析新签名的 `CodeDirectory` 把标识读回来逐项比对，
       收尾在**最终会打进 IPA 的那份 app** 上汇总（`签名标识自检：检查 N 项，不匹配 M 项`，0 才算全对）
+- [x] **日志不再拖卡界面**：Rust 侧过滤 `goblin` / `apple_codesign::code_resources` 的逐条 dump
+      （一轮签名从 2 万余行降到几百行）；Swift 侧日志改为**每 0.2 秒合并提交一次**
+      （原来每行一次跨 FFI + 一次主线程切换 + 一次视图刷新）；日志卡片独立观察 `LogStore`，
+      界面只渲染末尾 200 行（点「复制」拿到的仍是全文）
 - [x] 证书库：多套证书持久化、可编辑、覆盖安装后**路径按当前数据容器自愈**（不会丢）
 - [x] 已签名 IPA 库：签名成功自动入库，点击即可再次安装
 - [x] 导入即入库：IPA / dylib 落到 `Application Support/Inputs/`，不依赖文档选择器给的临时副本

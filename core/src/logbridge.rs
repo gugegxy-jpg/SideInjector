@@ -39,11 +39,24 @@ impl Log for Bridge {
 
     fn log(&self, record: &Record) {
         // 只放行 Error/Warn/Info/Debug；Trace 量过大，容易把 App 日志冲爆。
-        if record.level() <= log::Level::Debug {
-            let msg = record.args().to_string();
-            note(&msg);
-            log_msg(&format!("[{}] {msg}", record.target()));
+        if record.level() > log::Level::Debug {
+            return;
         }
+        let target = record.target();
+        // 两个纯噪声源（都只在下游 Warn/Error 时才有价值）：
+        //   goblin                        —— 把每个 Mach-O 的**每条 load command** 都打出来，
+        //                                    一轮签名能上万行、每行上百字符；
+        //   apple_codesign::code_resources —— 逐文件打印正则规则匹配结果。
+        // 它们会把 App 日志冲爆（上万次跨 FFI + 主线程刷新 → 界面卡死），
+        // 而真正有用的进度信息来自我们自己打的日志与 macho_signing/bundle_signing。
+        if record.level() > log::Level::Warn
+            && (target.starts_with("goblin") || target.starts_with("apple_codesign::code_resources"))
+        {
+            return;
+        }
+        let msg = record.args().to_string();
+        note(&msg);
+        log_msg(&format!("[{target}] {msg}"));
     }
 
     fn flush(&self) {}

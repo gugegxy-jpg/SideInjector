@@ -9,7 +9,6 @@ import UniformTypeIdentifiers
 //   按钮内显示当前阶段、仅安装时显示进度条）。完整说明见 THIRD_PARTY_NOTICES.md。
 struct ContentView: View {
     @EnvironmentObject var model: Model
-    @EnvironmentObject var log: LogStore
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var presentingShare = false
     @State private var tab = 0
@@ -542,41 +541,9 @@ struct ContentView: View {
 
     // MARK: - 日志
 
-    private var logCard: some View {
-        PanelCard {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    sectionTitle("日志", systemImage: "doc.plaintext")
-                    Spacer(minLength: 8)
-                    Button {
-                        UIPasteboard.general.string = log.text
-                    } label: {
-                        Label("复制", systemImage: "doc.on.doc")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(log.text.isEmpty)
-                    Button {
-                        log.clear()
-                    } label: {
-                        Label("清空", systemImage: "trash")
-                            .font(.caption.weight(.semibold))
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(log.text.isEmpty)
-                }
-                ScrollView {
-                    Text(log.text)
-                        .font(.system(.caption, design: .monospaced))
-                        // 长按可直接选择/复制任意片段
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(minHeight: 160, maxHeight: 300)
-                .scrollIndicators(.hidden)
-            }
-        }
-    }
+    /// 日志卡片（实现见 `LogCard`：它单独观察 `LogStore`，只重绘自己；
+    /// 界面只渲染末尾若干行，避免签名时上万行日志把首页一起拖卡）。
+    private var logCard: some View { LogCard() }
 
     // MARK: - 工具
 

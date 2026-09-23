@@ -74,36 +74,62 @@ pub fn sign_bundle(
         .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;
     let out = out_root.join(name);
 
-    // ① 先深签：递归重签所有嵌套 bundle（最规范）。
-    //    signer 先绑定到局部变量再调用，避免在临时值上链式调用带来的生存期问题。
-    let signer = UnifiedSigner::new(settings.clone());
-    let result = signer.sign_path(app, &out);
-    if let Err(ref e) = result {
-        log_msg(&format!("深签失败：{e:#}"));
+    // ① 先逐个重签嵌套代码（我们自己做"深签"）。
+    //
+    // 为什么不用 apple-codesign 的深签：
+    //   1) 它在部分 IPA 上会 ENOENT（其内部遍历的判定误判，见文件头说明）；
+    //   2) 更要紧的是**签名标识**：每个 bundle 的签名标识必须由它自己的
+    //      CFBundleIdentifier 派生，否则 installd 会拒绝：
+    //      `MismatchedBundleIDSigningIdentifier`
+    //      （实例：KAPinField.framework 原签名标识是 KAPinField，而它的 bundle id 是
+    //       org.cocoapods.KAPinField）。逐个 bundle 分别签名天然满足这一点。
+    let mut nested_settings = settings.clone();
+    // 对每个嵌套项自身用浅签：只重签它的主二进制 + 封自己的资源，
+    // 不再向下递归（它的嵌套项也在我们的清单里，会各自被处理）。
+    nested_settings.set_shallow(true);
+
+    let nested = collect_signable_nested(app);
+    log_msg(&format!("深签（自实现）：待重签嵌套代码 {} 项", nested.len()));
+    let mut failed = 0usize;
+    for item in &nested {
+        match sign_in_place(item, &nested_settings) {
+            Ok(()) => {}
+            Err(e) => {
+                failed += 1;
+                log_msg(&format!(
+                    "  重签失败（保留原签名）：{} —— {e:#}",
+                    item.display()
+                ));
+            }
+        }
+    }
+    log_msg(&format!(
+        "深签（自实现）：完成 {}，失败 {}",
+        nested.len() - failed,
+        failed
+    ));
+
+    // ② 再浅签主 App：嵌套代码保持刚刚重签的版本（浅签不会覆盖它们），
+    //    同时把最终内容整体封进主 App 的 CodeResources。
+    let mut shallow = settings.clone();
+    shallow.set_shallow(true);
+    let _ = fs::remove_dir_all(&out_root);
+    fs::create_dir_all(&out_root)
+        .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;
+    let signer = UnifiedSigner::new(shallow);
+    if let Err(e) = signer.sign_path(app, &out) {
+        log_msg(&format!("主 App 浅签失败：{e:#}"));
         if let Some(b) = crate::logbridge::last_bundle() {
-            log_msg(&format!("深签失败：最后进入的嵌套 bundle = {b}"));
+            log_msg(&format!("主 App 浅签失败：最后进入的嵌套 bundle = {b}"));
         }
         // apple-codesign 的 IO 错误不带路径；统计输出目录已产出的内容可推断它走到哪儿。
         report_partial_output(&out_root);
-
-        // ② 回退浅签：不递归进嵌套 bundle，把它们整体原样复制、只重签主 App。
-        //    等价于 rcodesign --shallow：第三方 framework 保持原签名，
-        //    主 App 的 CodeResources 按原样记录其哈希，iOS 仍能正常校验与运行。
-        log_msg("改为浅签重试（不重签嵌套代码，仅重签主 App）…");
-        let mut shallow = settings.clone();
-        shallow.set_shallow(true);
-        let _ = fs::remove_dir_all(&out_root);
-        fs::create_dir_all(&out_root)
-            .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;
-        let signer2 = UnifiedSigner::new(shallow);
-        let r2 = signer2.sign_path(app, &out);
-        if let Err(ref e2) = r2 {
-            log_msg(&format!("浅签也失败：{e2:#}"));
-            report_partial_output(&out_root);
-        }
-        r2.with_context(|| format!("签名 .app 失败（深签与浅签均失败）：{}", app.display()))?;
-        log_msg("浅签成功：主 App 已重签，嵌套代码保持原签名");
+        return Err(anyhow::anyhow!(
+            "签名 .app 失败：{}：{e:#}",
+            app.display()
+        ));
     }
+    log_msg("主 App 浅签完成（嵌套代码为各自重签后的版本）");
 
     // 用签名后的产物替换原 .app
     fs::remove_dir_all(app).with_context(|| format!("移除原 .app 失败：{}", app.display()))?;
@@ -112,6 +138,75 @@ pub fn sign_bundle(
 
     log_msg("apple-codesign 库签名完成");
     Ok(())
+}
+
+/// 收集需要单独重签的嵌套代码：`.framework` / `.appex` / `.bundle` / `.xpc` / `.app`
+/// 目录，以及 `Frameworks/` 下注入的 `.dylib`；按深度**从深到浅**排序（先签里面的）。
+fn collect_signable_nested(app: &Path) -> Vec<std::path::PathBuf> {
+    let mut found: Vec<(usize, std::path::PathBuf)> = Vec::new();
+    let mut stack: Vec<(usize, std::path::PathBuf)> = vec![(0, app.to_path_buf())];
+    while let Some((depth, dir)) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            let Ok(md) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if md.file_type().is_symlink() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if md.is_dir() {
+                let is_bundle = name.ends_with(".framework")
+                    || name.ends_with(".appex")
+                    || name.ends_with(".bundle")
+                    || name.ends_with(".xpc")
+                    || name.ends_with(".app");
+                if is_bundle {
+                    found.push((depth + 1, path.clone()));
+                }
+                stack.push((depth + 1, path));
+            } else if name.ends_with(".dylib") {
+                found.push((depth + 1, path));
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, p)| p).collect()
+}
+
+/// 就地把一个代码项（bundle 或 dylib）重签：签进临时目录，成功后再整体替换回去。
+fn sign_in_place(path: &Path, settings: &SigningSettings) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("无法取得父目录：{}", path.display()))?;
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("非法名称：{}", path.display()))?;
+
+    let out_root = parent.join(".si_nested");
+    let _ = fs::remove_dir_all(&out_root);
+    fs::create_dir_all(&out_root)
+        .with_context(|| format!("创建临时输出目录失败：{}", out_root.display()))?;
+    let out = out_root.join(name);
+
+    let attempt = (|| -> Result<()> {
+        let signer = UnifiedSigner::new(settings.clone());
+        signer
+            .sign_path(path, &out)
+            .with_context(|| format!("签名失败：{}", path.display()))?;
+        if path.is_dir() {
+            fs::remove_dir_all(path).with_context(|| format!("移除原项失败：{}", path.display()))?;
+        } else {
+            fs::remove_file(path).with_context(|| format!("移除原项失败：{}", path.display()))?;
+        }
+        fs::rename(&out, path).with_context(|| format!("替换回原路径失败：{}", path.display()))?;
+        Ok(())
+    })();
+    // 无论成败都清掉临时目录，避免残留被后面主 App 的签名给封进去。
+    let _ = fs::remove_dir_all(&out_root);
+    attempt
 }
 
 /// 签名前诊断：apple-codesign / apple-bundles 抛出的 IO 错误**不带路径**，

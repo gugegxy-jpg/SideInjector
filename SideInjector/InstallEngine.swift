@@ -120,6 +120,9 @@ final class InstallEngine {
                 }
             }
             guard let conn = locked else {
+                for line in await probePorts() {
+                    LogStore.shared.append("tunnel-probe: \(line)")
+                }
                 return .init(ok: false, message: """
                 回环隧道安装失败：候选端点都连不上（\(candidates.joined(separator: "、"))）。
                 请先安装并开启 loopback VPN（StosVPN / SideStore 的 VPN 描述文件）—— 它的作用就是把本设备自身的 lockdownd/CoreDevice 暴露到本地地址，没有它任何地址都连不通。
@@ -176,6 +179,9 @@ final class InstallEngine {
     /// 注意：这条隧道依赖 **loopback VPN**（StosVPN / SideStore 的 VPN 描述文件）——
     /// 它把本设备自身的 lockdownd/CoreDevice 暴露到某个本地地址上；没有它任何地址都连不通。
     func diagnose() async -> TunnelStatus {
+        for line in await probePorts() {
+            LogStore.shared.append("tunnel-probe: \(line)")
+        }
         let candidates = TunnelNet.candidateHosts()
         var found: NWConnection?
         var lastErr: Error?
@@ -218,6 +224,40 @@ final class InstallEngine {
                     : (selfPair == false ? "（需 PC 配对文件，iOS 18–26）" : "")
         return TunnelStatus(ok: true, message: "本地回环隧道已连通\(extra)",
                             deviceClass: deviceClass, selfPair: selfPair)
+    }
+
+    /// 探测各候选地址上「回环隧道」实际开放的端口 —— 用来判断 VPN 路由是否生效、
+    /// 以及该走哪条协议路径。三个端口对应三种机制：
+    ///   62078  经典 lockdownd（直接连通常不通：经典路径要先经 usbmuxd 转发）
+    ///   27015  usbmuxd（libimobiledevice / idevice 的入口，经它转发到 62078）
+    ///   49152  CoreDevice / RSD（iOS 17+ 现代路径，需远程配对或配对记录）
+    /// 全部并发探测，每个 2 秒超时，总耗时约 2 秒。
+    func probePorts() async -> [String] {
+        let hosts = Array(TunnelNet.candidateHosts().prefix(4))
+        var targets: [(name: String, host: String, port: UInt16)] = []
+        for h in hosts {
+            targets.append(("lockdownd", h, 62078))
+            targets.append(("usbmuxd", h, 27015))
+            targets.append(("RSD", h, 49152))
+        }
+        return await withTaskGroup(of: (Int, String).self) { group in
+            for (idx, t) in targets.enumerated() {
+                group.addTask {
+                    do {
+                        let c = try await withTimeout(seconds: 2) {
+                            try await connectTLS(host: t.host, port: t.port, ssl: false)
+                        }
+                        c.cancel()
+                        return (idx, "✅ \(t.host):\(t.port)（\(t.name)）可连接")
+                    } catch {
+                        return (idx, "❌ \(t.host):\(t.port)（\(t.name)）：\(error.localizedDescription)")
+                    }
+                }
+            }
+            var out: [(Int, String)] = []
+            for await r in group { out.append(r) }
+            return out.sorted { $0.0 < $1.0 }.map { $0.1 }
+        }
     }
 
     // MARK: - 配对文件

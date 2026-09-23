@@ -18,6 +18,8 @@ struct LibraryView: View {
     @State private var editingCert: SavedCert?
     @State private var pendingDeleteCert: SavedCert?
     @State private var pendingDeleteIPA: SignedIPA?
+    /// 导入已签名 IPA 的结果提示。
+    @State private var ipaTip: String?
 
     var body: some View {
         ScrollView {
@@ -176,13 +178,13 @@ struct LibraryView: View {
         PanelCard {
             VStack(alignment: .leading, spacing: 12) {
                 Label {
-                    Text("已签名 IPA").font(.headline)
+                    Text("已签名 IPA 库").font(.headline)
                 } icon: {
                     Image(systemName: "shippingbox.fill").foregroundStyle(Theme.brand)
                 }
 
                 if ipas.items.isEmpty {
-                    Text("完成一次「注入 + 签名」后，产物会自动出现在这里，点击即可直接安装。")
+                    Text("本 App 签名打包的产物会自动入库；也可以把别处已经签名好的 IPA 导入进来。点击条目或「安装」即可装到本机，点「导出」可保存/分享出去。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -193,6 +195,23 @@ struct LibraryView: View {
                             if item.id != ipas.items.last?.id { Divider() }
                         }
                     }
+                }
+
+                Divider()
+                Button {
+                    let picker = DocumentPicker(types: [UTType(filenameExtension: "ipa") ?? .data, .data]) { urls in
+                        importSignedIPA(urls.first)
+                    }
+                    topRootVC()?.present(picker, animated: true)
+                } label: {
+                    Label("导入已签名 IPA", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                if let ipaTip {
+                    Text(ipaTip)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -208,6 +227,12 @@ struct LibraryView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 6)
+            Button {
+                exportIPA(item)
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .buttonStyle(.borderless)
             Button {
                 model.installSaved(item)
             } label: {
@@ -225,6 +250,44 @@ struct LibraryView: View {
         .contentShape(Rectangle())
         .onTapGesture { if !model.busy { model.installSaved(item) } }
         .frame(minHeight: 46)
+    }
+
+    /// 导入外部「已经签名好的」IPA：复制入库，随即可点击安装或再导出。
+    private func importSignedIPA(_ url: URL?) {
+        guard let url else { return }
+        ipaTip = nil
+        guard url.pathExtension.lowercased() == "ipa" else {
+            ipaTip = "导入失败：请选择 .ipa 文件"
+            return
+        }
+        if let item = IPALibrary.shared.importExternal(url) {
+            ipaTip = "已导入：\(item.name)（\(item.sizeText)），可点「安装」"
+        } else {
+            ipaTip = "导入失败：无法读取或复制该 IPA（可能已被系统清理，请重新选择）"
+        }
+    }
+
+    /// 导出库里的 IPA：弹系统分享面板，可「存储到文件」或发给其他 App。
+    private func exportIPA(_ item: SignedIPA) {
+        let src = ipas.url(for: item)
+        guard FileManager.default.fileExists(atPath: src.path) else {
+            ipaTip = "导出失败：文件不存在（\(item.name)）"
+            return
+        }
+        // 分享面板显示的是文件的真实文件名，而库内文件是 <UUID>.ipa：
+        // 先按条目名复制一份到临时目录，导出的文件名才是可读的。
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("si_share_\(UUID().uuidString)", isDirectory: true)
+        try? fm.createDirectory(at: tmp, withIntermediateDirectories: true)
+        let named = tmp.appendingPathComponent(item.name.isEmpty ? "app.ipa" : item.name)
+        try? fm.removeItem(at: named)
+        let url = (try? fm.copyItem(at: src, to: named)) != nil ? named : src
+        let vc = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        if let pop = vc.popoverPresentationController, let view = topRootVC()?.view {
+            pop.sourceView = view
+            pop.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1, height: 1)
+        }
+        topRootVC()?.present(vc, animated: true)
     }
 }
 

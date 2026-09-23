@@ -77,7 +77,9 @@ struct ContentView: View {
                     Button {
                         presentingShare = true
                     } label: {
-                        Label("分享已签名 IPA", systemImage: "square.and.arrow.up")
+                        Label(model.skipSign ? "导出未签名 IPA（保存到「文件」）"
+                                             : "分享 / 导出已签名 IPA",
+                              systemImage: "square.and.arrow.up")
                     }
                     .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
                     .transition(.cardAppear)
@@ -163,6 +165,16 @@ struct ContentView: View {
                             .lineLimit(1)
                     }
                 }
+                Divider()
+                Toggle(isOn: $model.skipSign) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("跳过签名（只注入后导出）")
+                        Text("产出未签名 IPA 供导出/自行签名；该模式不会触发设备配对与安装。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .tint(Theme.accent)
             }
         }
     }
@@ -501,7 +513,7 @@ struct ContentView: View {
                 } else {
                     Image(systemName: "syringe.fill")
                         .contentTransition(.symbolEffect(.replace))
-                    Text("注入 + 签名 + 安装")
+                    Text(model.skipSign ? "注入 + 打包（不签名）" : "注入 + 签名 + 安装")
                 }
             }
         }

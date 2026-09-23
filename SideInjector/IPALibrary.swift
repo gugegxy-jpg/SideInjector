@@ -88,6 +88,17 @@ final class IPALibrary: ObservableObject {
         return item
     }
 
+    /// 导入外部「已经签名好的」IPA（来自「文件」App / 分享等）：复制入库，随即可安装或再导出。
+    /// 与 `add` 同样按「同名同大小」去重，因此重复导入同一个文件不会产生重复条目。
+    @discardableResult
+    func importExternal(_ url: URL) -> SignedIPA? {
+        guard url.pathExtension.lowercased() == "ipa" else { return nil }
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+        let name = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        return add(url: url, name: name.isEmpty ? "imported.ipa" : name)
+    }
+
     func remove(_ item: SignedIPA) {
         items.removeAll { $0.id == item.id }
         try? FileManager.default.removeItem(at: URL(fileURLWithPath: item.path))

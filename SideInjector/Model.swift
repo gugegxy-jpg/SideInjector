@@ -35,6 +35,9 @@ final class Model: ObservableObject {
     @Published var selectedCertID: UUID? {
         didSet { applySelectedCert() }
     }
+    /// 只注入导出：跳过签名，只做「解压 → 注入 → 改 Bundle → 打包」，产出未签名 IPA。
+    /// 未签名的 IPA 装不上设备，因此该模式下「设备配对」「安装到设备」两阶段会被跳过。
+    @Published var skipSign: Bool = false
     /// iOS 18–26 需要 PC 生成的配对文件；iOS 27+ 可设备端自配对（见「设备配对」卡片）。
     @Published var pairingFile: URL?
 
@@ -84,6 +87,7 @@ final class Model: ObservableObject {
         let bundleId: String
         let displayName: String
         let certPass: String
+        let skipSign: Bool
     }
 
     // MARK: - 流程上下文（用于暂停后从失败处续跑 / 取消后清理）
@@ -92,14 +96,17 @@ final class Model: ObservableObject {
         let ipaName: String
         /// 已复制进沙盒的 dylib 与其注入名。
         let dylibs: [(url: URL, name: String)]
-        let p12Copy: URL
-        let provCopy: URL
+        /// 「只注入导出」模式下为空（该模式不需要证书）。
+        let p12Copy: URL?
+        let provCopy: URL?
         let pairingCopy: URL?
         let tmp: URL
         let outIpa: URL
         let bundleId: String
         let displayName: String
         let certPass: String
+        /// 只注入导出：跳过签名，且不触发配对与安装。
+        let skipSign: Bool
     }
     private var ctx: FlowContext?
     private var resumeStep = 0
@@ -139,21 +146,29 @@ final class Model: ObservableObject {
 
         // 1) 校验（失败立刻弹窗；此时不动日志，方便看到上次现场）
         guard let ipa else { return failInput("请先选择 IPA 文件") }
-        guard certP12 != nil else {
-            return failInput("还没有选择证书：请到「库」页签添加证书，再在首页下拉中选择")
-        }
-        guard profile != nil else {
-            return failInput("所选证书缺少描述文件（mobileprovision），请到「库」页签编辑该证书并重新选择")
-        }
-        // 覆盖安装会更换数据容器路径，证书文件可能读不到：先明确告知怎么修，别让它到签名阶段才失败。
-        if let cert = selectedCert, !CertStore.shared.isUsable(cert) {
-            return failInput("所选证书的证书文件已丢失（覆盖安装会更换数据容器路径）：请到「库」页签对该证书点「编辑」重新选择 P12 与描述文件并保存")
+        if skipSign {
+            // 「只注入导出」模式不需要证书，但必须有 dylib：否则产物与原 IPA 一模一样，没有意义。
+            guard !dylibs.isEmpty else {
+                return failInput("已勾选「跳过签名」：该模式只做注入导出，请先选择要注入的 dylib（否则产物与原 IPA 相同）")
+            }
+        } else {
+            guard certP12 != nil else {
+                return failInput("还没有选择证书：请到「库」页签添加证书，再在首页下拉中选择（或勾选「跳过签名」只做注入导出）")
+            }
+            guard profile != nil else {
+                return failInput("所选证书缺少描述文件（mobileprovision），请到「库」页签编辑该证书并重新选择")
+            }
+            // 覆盖安装会更换数据容器路径，证书文件可能读不到：先明确告知怎么修，别让它到签名阶段才失败。
+            if let cert = selectedCert, !CertStore.shared.isUsable(cert) {
+                return failInput("所选证书的证书文件已丢失（覆盖安装会更换数据容器路径）：请到「库」页签对该证书点「编辑」重新选择 P12 与描述文件并保存")
+            }
         }
 
         // 2) 立刻给出可见反馈：准备阶段要把 IPA/证书复制进沙盒，大 IPA 会耗时。
         let snap = InputSnapshot(ipa: ipa, dylibs: dylibs,
                                  p12: certP12, prov: profile, pairing: pairingFile,
-                                 bundleId: bundleId, displayName: displayName, certPass: certPass)
+                                 bundleId: bundleId, displayName: displayName, certPass: certPass,
+                                 skipSign: skipSign)
         LogStore.shared.clear()
         shareItem = nil
         stageIndex = -1
@@ -164,7 +179,8 @@ final class Model: ObservableObject {
         installOnlyURL = nil
         outcome = .running
         status = "准备文件（复制到沙盒）…"
-        LogStore.shared.append("准备文件：\(ipa.lastPathComponent)")
+        LogStore.shared.append("准备文件：\(ipa.lastPathComponent)"
+                               + (skipSign ? "（模式：只注入导出，跳过签名与安装）" : ""))
 
         // 3) 在后台线程做复制，避免卡住主线程（这就是之前「点了没反应」的原因）。
         flowTask = Task.detached { [weak self] in
@@ -396,13 +412,18 @@ final class Model: ObservableObject {
             failInput("无法读取 IPA 文件「\(snap.ipa.lastPathComponent)」：文件可能已被系统清理或无权访问，请重新选择 IPA")
             return nil
         }
-        guard let p12Copy = copyIn(snap.p12, "cert.p12") else {
-            failInput("无法读取证书里的 P12 文件：请到「库」页签编辑该证书并重新选择 P12")
-            return nil
-        }
-        guard let provCopy = copyIn(snap.prov, "profile.mobileprovision") else {
-            failInput("无法读取证书里的描述文件（mobileprovision）：请到「库」页签编辑该证书并重新选择")
-            return nil
+        // 「只注入导出」模式下证书不是必需的；只有要签名时才强制要求 P12 + 描述文件。
+        let p12Copy = copyIn(snap.p12, "cert.p12")
+        let provCopy = copyIn(snap.prov, "profile.mobileprovision")
+        if !snap.skipSign {
+            guard p12Copy != nil else {
+                failInput("无法读取证书里的 P12 文件：请到「库」页签编辑该证书并重新选择 P12")
+                return nil
+            }
+            guard provCopy != nil else {
+                failInput("无法读取证书里的描述文件（mobileprovision）：请到「库」页签编辑该证书并重新选择")
+                return nil
+            }
         }
         let pairingCopy = copyIn(snap.pairing, "pairing.plist")
 
@@ -420,13 +441,20 @@ final class Model: ObservableObject {
         }
 
         let tmp = fm.temporaryDirectory.appendingPathComponent("si_out_\(UUID().uuidString)")
-        let outIpa = fm.temporaryDirectory.appendingPathComponent("signed_\(UUID().uuidString).ipa")
+        // 产物单独放一个目录、并用「原 IPA 名 + 后缀」命名：
+        // 分享/保存到「文件」App 时名字才是可读的（原来是 signed_<UUID>.ipa）。
+        let exportDir = fm.temporaryDirectory.appendingPathComponent("si_export_\(UUID().uuidString)")
+        try? fm.createDirectory(at: exportDir, withIntermediateDirectories: true)
+        let stem = (snap.ipa.lastPathComponent as NSString).deletingPathExtension
+        let outIpa = exportDir.appendingPathComponent(snap.skipSign
+            ? "\(stem)-injected-unsigned.ipa"
+            : "\(stem)-signed.ipa")
 
         return FlowContext(ipaCopy: ipaCopy, ipaName: snap.ipa.lastPathComponent,
                            dylibs: copiedDylibs, p12Copy: p12Copy,
                            provCopy: provCopy, pairingCopy: pairingCopy, tmp: tmp, outIpa: outIpa,
                            bundleId: snap.bundleId, displayName: snap.displayName,
-                           certPass: snap.certPass)
+                           certPass: snap.certPass, skipSign: snap.skipSign)
     }
 
     /// 由源文件名推断注入名（补 .dylib 后缀；空则用序号兜底）。
@@ -502,15 +530,22 @@ final class Model: ObservableObject {
                     }
 
                 case 3:
-                    guard let app = self.resolveApp(tmp: ctx.tmp) else {
-                        self.pause(at: 3, reason: "未在 Payload 中找到 .app"); return
+                    if ctx.skipSign {
+                        self.markSkipped(3, "跳过签名（只注入导出）")
+                    } else {
+                        guard let app = self.resolveApp(tmp: ctx.tmp) else {
+                            self.pause(at: 3, reason: "未在 Payload 中找到 .app"); return
+                        }
+                        guard let p12 = ctx.p12Copy, let prov = ctx.provCopy else {
+                            self.pause(at: 3, reason: "证书文件不可用：请到「库」页签重新选择 P12 与描述文件"); return
+                        }
+                        self.markRunning(3, "重签…")
+                        if r.sign(app: app.path, p12: p12.path, pw: ctx.certPass,
+                                  prov: prov.path, team: "") != 0 {
+                            self.pause(at: 3, reason: "重签失败：请检查证书/描述文件是否匹配，以及 IPA 是否已砸壳"); return
+                        }
+                        self.markDone(3)
                     }
-                    self.markRunning(3, "重签…")
-                    if r.sign(app: app.path, p12: ctx.p12Copy.path, pw: ctx.certPass,
-                              prov: ctx.provCopy.path, team: "") != 0 {
-                        self.pause(at: 3, reason: "重签失败：请检查证书/描述文件是否匹配，以及 IPA 是否已砸壳"); return
-                    }
-                    self.markDone(3)
 
                 case 4:
                     self.markRunning(4, "打包 IPA…")
@@ -520,13 +555,20 @@ final class Model: ObservableObject {
                     DispatchQueue.main.async {
                         guard self.outcome != .idle else { return }
                         self.shareItem = ctx.outIpa
-                        // 自动入库：即使后面安装失败，也能在「库」里点击直接安装。
-                        IPALibrary.shared.add(url: ctx.outIpa, name: ctx.ipaName)
+                        // 只入库「已签名」产物：未签名 IPA 装不上设备，
+                        // 混进库里会让「点一下即可安装」变成必然失败。
+                        if !ctx.skipSign {
+                            // 自动入库：即使后面安装失败，也能在「库」里点击直接安装或导出。
+                            IPALibrary.shared.add(url: ctx.outIpa, name: ctx.outIpa.lastPathComponent)
+                        }
                     }
                     self.markDone(4)
 
                 case 5: // 设备配对（= pairingStage）
-                    if self.isPaired {
+                    if ctx.skipSign {
+                        // 未签名 IPA 无法安装 → 配对与安装都跳过（不触发任何安装动作）。
+                        self.markSkipped(self.pairingStage, "只注入导出，无需配对")
+                    } else if self.isPaired {
                         self.markSkipped(self.pairingStage, "已配对")
                     } else {
                         DispatchQueue.main.async {
@@ -542,6 +584,11 @@ final class Model: ObservableObject {
                     }
 
                 case 6: // 安装到设备（= installStage）
+                    if ctx.skipSign {
+                        // 关键：只注入导出时**绝不触发安装**。
+                        self.markSkipped(self.installStage, "只注入导出，不安装")
+                        break
+                    }
                     self.markRunning(self.installStage, "安装到设备…")
                     let result = await InstallEngine.shared.install(
                         ipaPath: ctx.outIpa.path,
@@ -560,7 +607,9 @@ final class Model: ObservableObject {
                 }
                 i += 1
             }
-            self.finishSuccess()
+            self.finishSuccess(ctx.skipSign
+                ? "已完成：已生成未签名 IPA（点「导出」保存到「文件」App）"
+                : "已完成：安装成功")
         }
     }
 
@@ -639,14 +688,14 @@ final class Model: ObservableObject {
             self.status = reason
         }
     }
-    private func finishSuccess() {
+    private func finishSuccess(_ message: String = "已完成：安装成功") {
         DispatchQueue.main.async {
             guard self.outcome != .idle else { return }
             self.progress = 1
             self.stageIndex = max(0, self.stepCount - 1)
             self.outcome = .done
             self.pauseReason = nil
-            self.status = "已完成：安装成功"
+            self.status = message
         }
     }
 

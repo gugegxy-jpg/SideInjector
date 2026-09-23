@@ -134,6 +134,14 @@ pub async fn install(
         handshake.protocol_version,
         handshake.services.len()
     ));
+    // 不同 iOS 版本经不同隧道暴露的服务集合不同 —— 先把服务名全部打出来（每行 6 个），
+    // 以便照着「实际可用」的服务选上传/安装通道，而不是死认经典名字。
+    let mut names: Vec<String> = handshake.services.keys().cloned().collect();
+    names.sort();
+    log_msg(&format!("rp: RSD 服务共 {} 个：", names.len()));
+    for chunk in names.chunks(6) {
+        log_msg(&format!("rp:   {}", chunk.join("、")));
+    }
     for name in ["com.apple.afc", "com.apple.mobile.installation_proxy"] {
         log_msg(&format!(
             "rp: 服务 {name} {}",
@@ -145,13 +153,19 @@ pub async fn install(
         ));
     }
     if !handshake.services.contains_key("com.apple.afc") {
-        bail!("RSD 未提供 com.apple.afc：请确认开发者模式已开启");
+        bail!(
+            "RSD 未提供 com.apple.afc（本隧道共 {} 个服务）：把上面「rp: RSD 服务」几行发出来，据此改用实际可用的上传/安装服务",
+            names.len()
+        );
     }
     if !handshake
         .services
         .contains_key("com.apple.mobile.installation_proxy")
     {
-        bail!("RSD 未提供 com.apple.mobile.installation_proxy：请确认开发者模式已开启");
+        bail!(
+            "RSD 未提供 com.apple.mobile.installation_proxy（本隧道共 {} 个服务）：把上面「rp: RSD 服务」几行发出来",
+            names.len()
+        );
     }
 
     // 7) 必须以 Developer 安装，否则 installd 不读内嵌描述文件，会在校验阶段拒绝。

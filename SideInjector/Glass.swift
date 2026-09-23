@@ -65,3 +65,23 @@ extension View {
         self.background(AppBackground())
     }
 }
+
+// MARK: - 底部页签栏
+
+extension View {
+    /// 系统页签栏的「浮动玻璃」行为。
+    ///
+    /// - iOS 26+：让页签栏在**向下滚动时收起**（配合系统的 Liquid Glass 就是那种悬浮效果）；
+    /// - 旧系统：保持系统默认（无需额外处理）。
+    ///
+    /// 注：不再自绘 dock —— 自绘时它得放在内容区的 VStack 里，下方会露出 OLED 黑底，
+    /// 看起来像「矩形深色底板 + 胶囊玻璃」，而且拿不到系统的浮动/收起行为。
+    @ViewBuilder
+    func siFloatingTabBar() -> some View {
+        if #available(iOS 26.0, *) {
+            self.tabBarMinimizeBehavior(.onScrollDown)
+        } else {
+            self
+        }
+    }
+}

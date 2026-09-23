@@ -19,17 +19,20 @@ struct ContentView: View {
     @State private var envBusy = false
 
     var body: some View {
-        // 背景作为「兄弟层」铺满全屏（含安全区）；内容层尊重安全区。
-        ZStack(alignment: .top) {
+        // 背景作为「兄弟层」铺满全屏（含安全区）；页签内容用系统 TabView。
+        //
+        // 为什么不再自绘底部 dock：自绘时它必须放在内容区的 VStack 里，于是它下方露出的是
+        // OLED 黑底，看起来就是「一块矩形深色底板 + 一层胶囊玻璃」，而且拿不到系统的
+        // 浮动 / 收起行为；换成系统 TabView 后，iOS 26+ 会由系统渲染成**浮动 Liquid Glass**
+        // 页签栏（并在向下滚动时自动收起），内容还能从它下面穿过。
+        ZStack {
             AppBackground()
                 .ignoresSafeArea()
-            VStack(spacing: 0) {
-                Group {
-                    if tab == 0 { homeTab } else { LibraryView() }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                bottomTabBar
+            TabView(selection: $tab) {
+                Tab("主页", systemImage: "house.fill", value: 0) { homeTab }
+                Tab("库", systemImage: "books.vertical.fill", value: 1) { LibraryView() }
             }
+            .siFloatingTabBar()
         }
         .navigationBarHidden(true)
         .preferredColorScheme(.dark)
@@ -96,35 +99,8 @@ struct ContentView: View {
         .scrollIndicators(.hidden)   // 不显示右侧滚动条
     }
 
-    // MARK: - 底部页签
-
-    private var bottomTabBar: some View {
-        HStack(spacing: 0) {
-            tabButton(0, "主页", "house.fill")
-            tabButton(1, "库", "books.vertical.fill")
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 10)
-        // iOS 26+ 用系统 Liquid Glass 悬浮胶囊；旧系统退回毛玻璃胶囊。
-        .siGlassBar()
-        .padding(.horizontal, 16)
-        .padding(.bottom, 6)
-    }
-
-    private func tabButton(_ idx: Int, _ title: String, _ icon: String) -> some View {
-        Button {
-            withAnimation(.snappy(duration: 0.22)) { tab = idx }
-        } label: {
-            VStack(spacing: 3) {
-                Image(systemName: icon).font(.system(size: 18, weight: .semibold))
-                Text(title).font(.caption2.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity)
-            .foregroundStyle(tab == idx ? Theme.accent : Color.secondary)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
+    // 底部页签栏：已改用系统 `TabView`（见 body 里的说明与 `siFloatingTabBar()`），
+    // 自绘 dock（矩形底板 + 胶囊玻璃）已删除。
 
     // MARK: - 头部
 

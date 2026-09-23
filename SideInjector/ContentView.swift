@@ -163,13 +163,26 @@ struct ContentView: View {
         PanelCard {
             VStack(alignment: .leading, spacing: 12) {
                 sectionTitle("输入", systemImage: "doc.badge.plus")
-                FileRow(title: "IPA 文件", url: $model.ipa)
+                Button {
+                    let picker = DocumentPicker(types: [UTType(filenameExtension: "ipa") ?? .data, .data]) { urls in
+                        model.importIPA(urls.first)
+                    }
+                    topRootVC()?.present(picker, animated: true)
+                } label: {
+                    HStack {
+                        Text("IPA 文件").foregroundStyle(.primary)
+                        Spacer()
+                        Text(model.ipa.map { Model.displayName(for: $0) } ?? "未选择")
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .buttonStyle(.plain)
                 Divider()
                 Button {
                     let picker = DocumentPicker(types: [UTType(filenameExtension: "dylib") ?? .data, .data],
                                                 allowsMultiple: true) { urls in
-                        let existing = Set(model.dylibs.map(\.path))
-                        model.dylibs.append(contentsOf: urls.filter { !existing.contains($0.path) })
+                        model.importDylibs(urls)
                     }
                     topRootVC()?.present(picker, animated: true)
                 } label: {
@@ -186,7 +199,7 @@ struct ContentView: View {
                         ForEach(model.dylibs, id: \.self) { u in
                             HStack(spacing: 8) {
                                 Image(systemName: "shippingbox").foregroundStyle(Theme.brand)
-                                Text(u.lastPathComponent)
+                                Text(Model.displayName(for: u))
                                     .font(.caption)
                                     .lineLimit(1)
                                 Spacer(minLength: 6)

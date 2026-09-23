@@ -184,6 +184,74 @@ final class Model: ObservableObject {
         }
     }
 
+    // MARK: - 输入文件持久化
+    //
+    // DocumentPicker(asCopy:) 给的副本位于 App 的临时目录，系统可能随时清理；
+    // 一旦被清理，run() 里复制进沙盒就会失败（表现为「点了没反应」）。
+    // 因此在「选择文件」的当下就把文件复制进 App 的持久目录，之后始终读自己这份。
+
+    private static func persistentInputDir() -> URL {
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                 in: .userDomainMask,
+                                                 appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+        let dir = base.appendingPathComponent("Inputs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    /// 是否是我们自己导入到持久目录的副本（可以安全删除）。
+    private static func isOwnedInput(_ url: URL) -> Bool {
+        url.path.contains("/Inputs/")
+    }
+
+    /// 选择 IPA 后立刻落盘到持久目录。
+    func importIPA(_ url: URL?) {
+        guard let url else { return }
+        let fm = FileManager.default
+        let dir = Self.persistentInputDir()
+        let dst = dir.appendingPathComponent("\(UUID().uuidString)_\(url.lastPathComponent)")
+        let a = url.startAccessingSecurityScopedResource()
+        defer { if a { url.stopAccessingSecurityScopedResource() } }
+        if (try? fm.copyItem(at: url, to: dst)) != nil {
+            if let old = ipa, Self.isOwnedInput(old) { try? fm.removeItem(at: old) }
+            ipa = dst
+            LogStore.shared.append("已导入 IPA：\(url.lastPathComponent)")
+        } else {
+            ipa = url
+            LogStore.shared.append("IPA 导入持久目录失败，暂用原路径：\(url.lastPathComponent)")
+        }
+        inputError = nil
+    }
+
+    /// 选择 dylib 后立刻落盘到持久目录（可多选）。
+    func importDylibs(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        let fm = FileManager.default
+        let dir = Self.persistentInputDir()
+        for url in urls {
+            let dst = dir.appendingPathComponent("\(UUID().uuidString)_\(url.lastPathComponent)")
+            let a = url.startAccessingSecurityScopedResource()
+            if (try? fm.copyItem(at: url, to: dst)) != nil {
+                dylibs.append(dst)
+            } else {
+                dylibs.append(url)
+                LogStore.shared.append("dylib 导入持久目录失败，暂用原路径：\(url.lastPathComponent)")
+            }
+            if a { url.stopAccessingSecurityScopedResource() }
+        }
+    }
+
+    /// 展示用文件名：去掉导入时加上的 UUID 前缀，还原用户看到的原始名字。
+    static func displayName(for url: URL) -> String {
+        let n = url.lastPathComponent
+        if let idx = n.firstIndex(of: "_"),
+           n.distance(from: n.startIndex, to: idx) == 36 {   // UUID 字符串长度
+            return String(n[n.index(after: idx)...])
+        }
+        return n
+    }
+
     /// 「库」里点击一条已签名 IPA → 直接安装（只跑安装阶段）。
     func installSaved(_ item: SignedIPA) {
         guard !busy else { return }
@@ -269,15 +337,41 @@ final class Model: ObservableObject {
             return nil
         }
 
+        /// 记录输入文件是否可读 / 大小，便于定位「准备失败」的真正原因。
+        func probe(_ url: URL?, _ label: String) {
+            guard let url else {
+                LogStore.shared.append("输入检查：\(label) 未选择")
+                return
+            }
+            let a = url.startAccessingSecurityScopedResource()
+            defer { if a { url.stopAccessingSecurityScopedResource() } }
+            let attrs = try? fm.attributesOfItem(atPath: url.path)
+            let size = (attrs?[.size] as? NSNumber)?.int64Value
+            let sizeText = size.map { "\($0)B" } ?? "未知"
+            LogStore.shared.append("输入检查：\(label) 可读=\(attrs != nil) 大小=\(sizeText) 文件=\(url.lastPathComponent)")
+        }
+
         func copyIn(_ url: URL?, _ name: String) -> URL? {
             guard let url else { return nil }
             let dst = workDir.appendingPathComponent(name)
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             try? fm.removeItem(at: dst)
-            guard (try? fm.copyItem(at: url, to: dst)) != nil else { return nil }
-            return fm.fileExists(atPath: dst.path) ? dst : nil
+            if (try? fm.copyItem(at: url, to: dst)) != nil, fm.fileExists(atPath: dst.path) {
+                return dst
+            }
+            // 兜底：个别安全作用域 URL 上 copyItem 会失败，改为读数据再写入。
+            if let data = try? Data(contentsOf: url), !data.isEmpty {
+                try? data.write(to: dst)
+                if fm.fileExists(atPath: dst.path) { return dst }
+            }
+            return nil
         }
+
+        probe(snap.ipa, "IPA")
+        probe(snap.p12, "P12")
+        probe(snap.prov, "描述文件")
+        probe(snap.pairing, "配对文件")
 
         guard let ipaCopy = copyIn(snap.ipa, "in.ipa") else {
             failInput("无法读取 IPA 文件「\(snap.ipa.lastPathComponent)」：文件可能已被系统清理或无权访问，请重新选择 IPA")

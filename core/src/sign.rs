@@ -47,9 +47,32 @@ pub fn sign_bundle(
     settings.set_entitlements_xml(SettingsScope::Main, entitlements.as_str())?;
 
     let signer = UnifiedSigner::new(settings);
+
+    // 不要用 sign_path_in_place：对「目录型 bundle」它会先把目标文件删掉、再从源路径复制，
+    // 而 in-place 时输入与输出是同一个路径 —— 等于删掉源文件后再去 lstat 它，直接 ENOENT。
+    // 这里改成签到一个独立输出目录，成功后再整体替换回原 .app（等价于 CLI 的 -o）。
+    let parent = app
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("无法取得 .app 的父目录：{}", app.display()))?;
+    let name = app
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("非法的 .app 名称：{}", app.display()))?;
+
+    let out_root = parent.join(".si_signed");
+    let _ = fs::remove_dir_all(&out_root);
+    fs::create_dir_all(&out_root)
+        .with_context(|| format!("创建签名输出目录失败：{}", out_root.display()))?;
+    let out = out_root.join(name);
+
     signer
-        .sign_path_in_place(app)
+        .sign_path(app, &out)
         .with_context(|| format!("签名 .app 失败：{}", app.display()))?;
+
+    // 用签名后的产物替换原 .app
+    fs::remove_dir_all(app).with_context(|| format!("移除原 .app 失败：{}", app.display()))?;
+    fs::rename(&out, app).with_context(|| format!("替换回 .app 失败：{}", app.display()))?;
+    let _ = fs::remove_dir_all(&out_root);
 
     log_msg("apple-codesign 库签名完成");
     Ok(())

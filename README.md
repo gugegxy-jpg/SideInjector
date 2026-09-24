@@ -80,6 +80,10 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       说明：**安装链路不访问外网**——全程是本机内的 loopback VPN 隧道 → RSD → AFC/installation_proxy → installd，
       WiFi 本身不提供通路（连自己的 LAN 地址仍走本机回环，沙盒限制相同）；安装开始时也会记一行
       `install: 网络环境：WiFi … · LocalDevVPN …`，便于事后对照
+- [x] **状态栏蒙版**：内容（标题、卡片）滚到系统状态栏下面时，时钟/电量不再与 App 文字压字。
+      实现为固定在屏幕顶部的一条系统材质（`StatusBarMask.swift`），材质**跟系统版本走**：
+      iOS 26+ 用 Liquid Glass（`.glassEffect`）、旧系统用 `.ultraThinMaterial`；高度取窗口的
+      `safeAreaInsets.top`，整层 `allowsHitTesting(false)`（不吃点击），两个页签都受保护
 - [x] **清理 App 缓存**：「库」页签 →「存储与缓存」显示缓存占用并可一键清理
       （只清 `tmp/` 下的工作目录与 `Caches`；证书、已签名 IPA 库、导入的 IPA / dylib、配对文件、日志都保留）
 - [x] **自动清理解包残留**：App 启动时（后台队列）自动删掉上次运行遗留的 `si_out_*`（解包工作树）、

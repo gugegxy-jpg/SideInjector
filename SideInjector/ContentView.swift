@@ -40,6 +40,9 @@ struct ContentView: View {
                 legacyTabLayout
             }
         }
+        // 状态栏蒙版：内容滚动到状态栏下面时，系统时钟/电量不再和 App 文字压字。
+        // 材质跟系统版本走（iOS 26+ Liquid Glass / 旧系统毛玻璃），固定在屏幕顶部、不吃点击。
+        .siStatusBarMask()
         .navigationBarHidden(true)
         .preferredColorScheme(.dark)
         .tint(Theme.accent)

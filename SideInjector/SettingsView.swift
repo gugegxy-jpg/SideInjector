@@ -2,12 +2,21 @@ import SwiftUI
 
 /// 「设置」页 —— 底部第三个页签，位于「库」右侧（见 `ContentView.systemTabView`）。
 ///
-/// 目前只有「执行期间不被打断」的两项开关，它们针对同一个问题：
-/// 整个流程（解包 → 注入 → 签名 → 打包 → 上传安装）可能持续十几分钟，
-/// 中途息屏 / 切到别的 App 会让本 App 被系统挂起，流程断在半路。
-/// 两种手段各有取舍，所以都放出来让用户自己选（可以同时开）。
+/// 两块内容：
+///   1. 「执行期间不被打断」的两个开关（息屏 / 后台保活）；
+///   2. 「关于」：作者 + 仓库入口（点击跳 GitHub）。
 struct SettingsView: View {
     @ObservedObject private var model = Model.shared
+
+    /// 仓库地址（「关于」里点击跳转用）。
+    private static let repoURL = URL(string: "https://github.com/gugegxy-jpg/SideInjector")!
+    /// 版本号（`CFBundleShortVersionString`（build））。
+    private static var appVersion: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "-"
+        let build = info?["CFBundleVersion"] as? String ?? "-"
+        return "\(short)（\(build)）"
+    }
 
     var body: some View {
         ScrollView {
@@ -48,6 +57,42 @@ struct SettingsView: View {
                             }
                         }
                         Text("两者可同时开。只开一个的话：想省电选「后台保活」，想简单选「不息屏」。")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
+                // 关于 / 作者：整行可点，跳 GitHub 仓库。
+                PanelCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label {
+                            Text("关于").font(.headline)
+                        } icon: {
+                            Image(systemName: "person.crop.circle").foregroundStyle(Theme.brand)
+                        }
+                        Link(destination: Self.repoURL) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "curlybraces")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(Theme.accent)
+                                    .frame(width: 30, height: 30)
+                                    .background(Circle().fill(Theme.accent.opacity(0.14)))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("作者：gugegxy-jpg").font(.subheadline.weight(.semibold))
+                                    Text("github.com/gugegxy-jpg/SideInjector")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 6)
+                                Image(systemName: "arrow.up.right.square")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        Text("版本 \(Self.appVersion)　·　参考 SideInstaller by FrizzleM、"
+                             + "apple-codesign（MPL-2.0）与 idevice（MIT）；"
+                             + "完整第三方声明见仓库根目录 THIRD_PARTY_NOTICES.md")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

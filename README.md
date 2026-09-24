@@ -95,7 +95,9 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       **后台保活**（静音音频 + `UIBackgroundModes: audio`，**锁屏 / 切后台进程仍存活、安装能跑完**；
       代价是更耗电并占用音频通道）。两者可同时开，选择持久化到 `UserDefaults`；
       由 `Model.outcome` 统一驱动（`applyRunGuards`）：流程开始 / 继续自动开启，完成 / 失败 / 取消自动恢复，
-      且只关自己开的那一个保活（配对流程也用同一个 `KeepAlive`，不会误停）
+      且只关自己开的那一个保活（配对流程也用同一个 `KeepAlive`，不会误停）。
+      同页还有「关于」：作者 **gugegxy-jpg**（整行可点，跳 <https://github.com/gugegxy-jpg/SideInjector>）、
+      版本号（读 `CFBundleShortVersionString`）与第三方声明入口
 - [x] **清理 App 缓存**：「库」页签 →「存储与缓存」显示缓存占用并可一键清理
       （只清 `tmp/` 下的工作目录与 `Caches`；证书、已签名 IPA 库、导入的 IPA / dylib、配对文件、日志都保留）
 - [x] **自动清理解包残留**：App 启动时（后台队列）自动删掉上次运行遗留的 `si_out_*`（解包工作树）、

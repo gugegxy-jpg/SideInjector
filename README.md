@@ -11,6 +11,11 @@
 > 与桌面工具 `ipatool` 完全独立，本目录是单独项目，不要并入原工具。
 > 仓库：https://github.com/gugegxy-jpg/SideInjector
 
+**支持的系统：iOS 17.0 及以上。** 本工具**自身**必须运行在 iOS 17 及以上：设备端安装走的是
+iOS 17 才引入的 **CoreDevice / RSD（49152）** 链路。iOS 17 以下没有这条链路，只能走经典
+lockdownd(62078) 通路，而那条路**未经实机验证**，因此**不支持 iOS 16 及以下**——低于 iOS 17 的设备
+装不上本 App，`project.yml` 的部署目标也是 `17.0`。
+
 ---
 
 ## 快速开始（使用）
@@ -81,9 +86,10 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       WiFi 本身不提供通路（连自己的 LAN 地址仍走本机回环，沙盒限制相同）；安装开始时也会记一行
       `install: 网络环境：WiFi … · LocalDevVPN …`，便于事后对照
 - [x] **状态栏蒙版**：内容（标题、卡片）滚到系统状态栏下面时，时钟/电量不再与 App 文字压字。
-      实现为固定在屏幕顶部的一条系统材质（`StatusBarMask.swift`），材质**跟系统版本走**：
-      iOS 26+ 用 Liquid Glass（`.glassEffect`）、旧系统用 `.ultraThinMaterial`；高度取窗口的
-      `safeAreaInsets.top`，整层 `allowsHitTesting(false)`（不吃点击），两个页签都受保护
+      **只在真的滚上去之后才出现，并且渐显**（iOS 18+ 用 `onScrollGeometryChange` 读滚动位置，
+      0.18s 淡入淡出；iOS 17 没有该 API，那一档退回常显）。实现为固定在屏幕顶部的**系统材质**
+      （`StatusBarMask.swift`）：iOS 26+ Liquid Glass（`.glassEffect`）、旧系统 `.ultraThinMaterial`；
+      高度取窗口 `safeAreaInsets.top`，整层 `allowsHitTesting(false)`（不吃点击），两个页签都受保护
 - [x] **性能 / 功耗定点优化**（一轮全仓库审计后的结论，按影响排序）：
       ① 过滤 `apple_codesign::bundle_signing` 的逐文件 `copying file …`（一轮签名上千行，跨 FFI + 落盘 + 界面刷新都要吃一遍）；
       ② 日志 flush 定时器改为**有日志才起**（原来空闲也每 0.2 秒唤醒主线程），内存里保留的日志全文加 512 KB 上限；

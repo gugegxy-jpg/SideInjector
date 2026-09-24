@@ -57,16 +57,10 @@ pub fn sign_bundle(
     }
     diagnose_bundle(app);
 
-    // 扩展 Bundle ID 前缀自愈（**无条件**做，见 crate::bundle::normalize_extension_ids 的说明）：
-    // 第三方改版 IPA 常出现「主 App 的 bundle id 被改过、嵌套扩展没跟着改」，这种包用户什么都
-    // 不改、原样签名也会被 installd 以 `Mismatched bundle IDs` 拒绝（实测：637 MB 上传完才被拒）。
-    let healed = crate::bundle::normalize_extension_ids(app);
-    if healed > 0 {
-        log_msg(&format!(
-            "扩展前缀自愈：{healed} 个扩展的 Bundle ID 已改写为以主 App（{}）为前缀（否则 installd 会拒绝安装）",
-            bundle_id_of(app).unwrap_or_else(|| "(未知)".to_string())
-        ));
-    }
+    // 这里**不做**「自动改写扩展 Bundle ID」的静默自愈（曾实现过，已按风险评估撤回）：
+    // 扩展的 Bundle ID 是运行时身份，主 App 里若有硬编码引用（NSUserDefaults(suiteName:)
+    // 派生的键、URL scheme、推送 topic、共享容器…），改名会让这些功能静默失效，且无法预知。
+    // 错配改由下面的「扩展前缀自检」点名报出，用户可在流程里跑一次「改 Bundle ID」显式修复。
 
     let p12_data = fs::read(p12).with_context(|| format!("读取 P12 证书失败：{p12}"))?;
     let prov_data = fs::read(prov).with_context(|| format!("读取描述文件失败：{prov}"))?;
@@ -386,7 +380,11 @@ fn verify_signed_identifiers(app: &Path) {
                 ext_bad += 1;
                 log_msg(&format!(
                     "⚠️ 扩展前缀自检：{id} 不以父 App 的 bundle id（{main_id}）为前缀 —— \
-                     installd 会以 Mismatched bundle IDs 拒绝安装"
+                     installd 会以 Mismatched bundle IDs 拒绝安装。\n\
+                     　　这是这个包**自带**的错配（第三方改过主 App 的 ID 却没改扩展），\
+                     不改它无论怎么签都装不上。\n\
+                     　　想修：在流程里把「改 Bundle ID」那一步跑一次（**填与当前相同的 ID 也可以**），\
+                     工具会按旧 ID 精确改好扩展（日志 `嵌套扩展 Bundle ID：…：旧 → 新`）。"
                 ));
             }
         }

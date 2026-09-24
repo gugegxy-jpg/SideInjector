@@ -156,7 +156,13 @@ final class Model: ObservableObject {
 
     // MARK: - 运行状态
     @Published var status: String = "空闲"
-    @Published var outcome: RunOutcome = .idle
+    @Published var outcome: RunOutcome = .idle {
+        didSet {
+            // 执行期间不让设备息屏（息屏会把 App 挂起，流程直接断在半路）。
+            // 挂在状态上而不是散在流程各处调用：任何一条退出路径（完成 / 失败 / 取消）都会自动恢复。
+            ScreenAwake.set(busy)
+        }
+    }
     @Published var progress: Double = 0
     @Published var stageIndex: Int = -1
     @Published var pauseReason: String? = nil

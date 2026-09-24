@@ -70,8 +70,10 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       只写后台日志文件 `Application Support/Logs/sideinjector.log`。Rust 侧过滤 `goblin` /
       `apple_codesign::code_resources` 的逐条 dump；Swift 侧**每 0.2 秒合并提交一次**、
       日志卡片独立观察 `LogStore`、界面只渲染末尾 200 行
-- [x] **日志管理**：首页日志卡片可「查看全部」（含细节日志的完整快照）、「导出」（分享 / 存到「文件」）、
-      「清空」（内存 + 文件，超过 4 MB 自动轮转保留一份 `sideinjector.1.log`）
+- [x] **日志管理**：首页日志卡片可「复制」完整日志（含细节日志的文件快照，直接进剪贴板，并提示行数 / 大小）、
+      「导出」（分享 / 存到「文件」）、「清空」（内存 + 文件，超过 4 MB 自动轮转保留一份 `sideinjector.1.log`）。
+      注：**不提供「查看全部」**——几千行文本一次性交给 `Text` 排版渲染不出来；那个入口的用途本来也只是
+      「把日志拿出来」，所以直接做成复制
 - [x] **清理 App 缓存**：「库」页签 →「存储与缓存」显示缓存占用并可一键清理
       （只清 `tmp/` 下的工作目录与 `Caches`；证书、已签名 IPA 库、导入的 IPA / dylib、配对文件、日志都保留）
 - [x] **自动清理解包残留**：App 启动时（后台队列）自动删掉上次运行遗留的 `si_out_*`（解包工作树）、

@@ -23,7 +23,7 @@ final class LogStore: ObservableObject {
     /// 日志文件超过这个大小就轮转（旧的保留一份 `sideinjector.1.log`）。
     private static let maxFileBytes: Int64 = 4 * 1024 * 1024
 
-    /// 重要日志全文（「查看全部 → 复制」用）。
+    /// 重要日志全文（内存快照）。「复制」优先读日志文件（含细节日志），文件读不到时用它兜底。
     @Published private(set) var text: String = ""
     /// 界面渲染用：重要日志的末尾若干行。
     @Published private(set) var tail: String = ""
@@ -159,12 +159,18 @@ final class LogStore: ObservableObject {
 ///
 /// 单独成一个 view 是刻意的：它自己观察 `LogStore`，于是每批日志只重绘**这张卡片**，
 /// 不会把整个首页（渐变、模糊卡片、列表…）重建一遍。
-/// 卡片上只显示**重要日志**的末尾若干行；完整日志（含细节）在后台文件里。
+/// 卡片上只显示**重要日志**的末尾若干行；完整日志（含细节）在后台文件里，可一键「复制」或「导出」。
+///
+/// 为什么没有「查看全部」：把几千行（更别说几 MB）文本一次性交给 `Text` 排版是**渲染不出来**的
+/// （白屏 / 卡住），而用户真正需要的动作只有一个 —— 把日志拿出来发人。所以那个入口改成了「复制」：
+/// 直接从日志文件读一份快照放进剪贴板，并给出明确反馈。
 struct LogCard: View {
     @ObservedObject private var log = LogStore.shared
-    @State private var showAll = false
     @State private var shareURL: URL?
     @State private var confirmClear = false
+    /// 复制反馈：按钮短暂变成「已复制」，下方显示一行「已复制 N 行 / 大小」。
+    @State private var copied = false
+    @State private var copiedNote: String?
 
     var body: some View {
         PanelCard {
@@ -177,9 +183,10 @@ struct LogCard: View {
                     }
                     Spacer(minLength: 8)
                     Button {
-                        showAll = true
+                        copyAll()
                     } label: {
-                        Label("查看全部", systemImage: "doc.text.magnifyingglass")
+                        Label(copied ? "已复制" : "复制",
+                              systemImage: copied ? "checkmark.circle.fill" : "doc.on.doc")
                             .font(.caption.weight(.semibold))
                     }
                     .buttonStyle(.bordered)
@@ -210,20 +217,24 @@ struct LogCard: View {
                 .frame(minHeight: 160, maxHeight: 300)
                 .scrollIndicators(.hidden)
 
-                if log.text.isEmpty {
-                    Text("尚无日志。详细日志会写进后台日志文件（可「查看全部」或「导出」）。")
+                if let note = copiedNote {
+                    Text(note)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Theme.brand)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if log.text.isEmpty {
+                    Text("尚无日志。详细日志会写进后台日志文件（可「复制」或「导出」）。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 } else {
                     Text("界面只显示重要日志的末尾 \(LogStore.visibleLines) 行 · 完整日志 \(log.fileSizeText)"
-                         + "（含细节）在后台文件里，可「查看全部」/「导出」")
+                         + "（含细节）在后台文件里，可「复制」/「导出」")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
-        .sheet(isPresented: $showAll) { LogViewer() }
         .sheet(isPresented: shareShown) {
             if let shareURL { ShareSheet(activityItems: [shareURL]) }
         }
@@ -235,60 +246,40 @@ struct LogCard: View {
         }
     }
 
+    /// 复制**完整日志**（含细节日志，也就是排查时真正有用的那些行）到剪贴板。
+    ///
+    /// 为什么读文件而不是用内存里的 `text`：后者只有重要日志，而细节行（逐项重签、端口探测、
+    /// 上游库输出、RSD 服务清单…）只在文件里；发人排查时少一行都可能缺线索。
+    /// 文件读不到时退回内存快照。
+    private func copyAll() {
+        log.loadAll { content in
+            let s = content.isEmpty ? log.text : content
+            guard !s.isEmpty else {
+                copied = false
+                copiedNote = "日志为空，没有可复制的内容"
+                scheduleNoteReset()
+                return
+            }
+            UIPasteboard.general.string = s
+            let lines = s.split(separator: "\n", omittingEmptySubsequences: false).count
+            let size = ByteCountFormatter.string(fromByteCount: Int64(s.utf8.count), countStyle: .file)
+            copied = true
+            copiedNote = "已复制完整日志：\(lines) 行 / \(size)（含细节日志，可直接粘贴发送）"
+            scheduleNoteReset()
+        }
+    }
+
+    /// 2 秒后把反馈收回去（含按钮上的「已复制」）。
+    private func scheduleNoteReset() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            copied = false
+            copiedNote = nil
+        }
+    }
+
     private var shareShown: Binding<Bool> {
         Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })
     }
 }
 
-/// 完整日志查看（含细节日志）：打开时从日志文件读一次快照，之后不随日志变化重排。
-struct LogViewer: View {
-    @ObservedObject private var log = LogStore.shared
-    @Environment(\.dismiss) private var dismiss
-    @State private var content: String?
-    @State private var shareURL: URL?
 
-    var body: some View {
-        NavigationStack {
-            Group {
-                if let content {
-                    ScrollView {
-                        Text(content.isEmpty ? "（日志文件为空）" : content)
-                            .font(.system(.caption2, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(12)
-                    }
-                    .scrollIndicators(.hidden)
-                } else {
-                    ProgressView("读取日志…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }
-            .navigationTitle("完整日志")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
-                }
-                ToolbarItemGroup(placement: .primaryAction) {
-                    Button {
-                        UIPasteboard.general.string = content ?? ""
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                    }
-                    .disabled((content ?? "").isEmpty)
-                    Button {
-                        shareURL = log.fileURL
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
-                    }
-                    .disabled(log.fileBytes == 0)
-                }
-            }
-        }
-        .onAppear { log.loadAll { content = $0 } }
-        .sheet(isPresented: Binding(get: { shareURL != nil }, set: { if !$0 { shareURL = nil } })) {
-            if let shareURL { ShareSheet(activityItems: [shareURL]) }
-        }
-    }
-}

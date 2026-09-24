@@ -401,7 +401,7 @@ struct ContentView: View {
                        ? "已连接 · \(env.vpnDetail)"
                        : "未连接 · \(env.vpnDetail)")
                 // 逐条端口探测结果不再铺在界面上（3 个候选地址通常 1 个可用、2 个超时，
-                // 一列红叉很扎眼）。这里只给一句结论；逐条明细写进后台日志（「查看全部」可见）。
+                // 一列红叉很扎眼）。这里只给一句结论；逐条明细写进后台日志（用日志卡片的「复制」取）。
                 let okPorts = env.portLines.filter { $0.contains("可连接") || $0.contains("收到") }
                 envRow("隧道端口", env.portLines.isEmpty
                        ? "未检测"

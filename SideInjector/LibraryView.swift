@@ -190,7 +190,9 @@ struct LibraryView: View {
                 } label: {
                     Label("保存到证书库", systemImage: "square.and.arrow.down")
                 }
-                .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
+                // 默认样式 = `Theme.brand` 品牌蓝渐变 + 蓝色辉光（与首页主操作按钮一致）。
+                // 原来用的是绿色（与「分享 / 导出」那颗同色，容易被读成"导出"类操作）。
+                .buttonStyle(PrimaryButtonStyle())
                 .disabled(newP12 == nil || newProv == nil)
 
                 if let savedTip {

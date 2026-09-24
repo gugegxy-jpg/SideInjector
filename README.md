@@ -84,6 +84,12 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       实现为固定在屏幕顶部的一条系统材质（`StatusBarMask.swift`），材质**跟系统版本走**：
       iOS 26+ 用 Liquid Glass（`.glassEffect`）、旧系统用 `.ultraThinMaterial`；高度取窗口的
       `safeAreaInsets.top`，整层 `allowsHitTesting(false)`（不吃点击），两个页签都受保护
+- [x] **性能 / 功耗定点优化**（一轮全仓库审计后的结论，按影响排序）：
+      ① 过滤 `apple_codesign::bundle_signing` 的逐文件 `copying file …`（一轮签名上千行，跨 FFI + 落盘 + 界面刷新都要吃一遍）；
+      ② 日志 flush 定时器改为**有日志才起**（原来空闲也每 0.2 秒唤醒主线程），内存里保留的日志全文加 512 KB 上限；
+      ③ 已签名 IPA 入库、导入 IPA 改为**硬链接**（同一卷内瞬时完成；不再整份复制几百 MB～GB，存储也不再翻倍）；
+      ④ 嵌套重签失败后的「全树结构诊断」只对前 3 个失败项做（同因批量失败时不再逐个白扫几千个文件）；
+      ⑤ 配对卡片的「本地网络授权探测」在离开卡片 / 探测失败后立即取消 Bonjour 浏览（不再常驻 mDNS 唤醒网卡）
 - [x] **清理 App 缓存**：「库」页签 →「存储与缓存」显示缓存占用并可一键清理
       （只清 `tmp/` 下的工作目录与 `Caches`；证书、已签名 IPA 库、导入的 IPA / dylib、配对文件、日志都保留）
 - [x] **自动清理解包残留**：App 启动时（后台队列）自动删掉上次运行遗留的 `si_out_*`（解包工作树）、

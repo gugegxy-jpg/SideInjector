@@ -177,7 +177,13 @@ pub fn sign_bundle(
                         item.display()
                     ));
                     // 复现 apple-bundles 的判定规则，看它「看到的」结构是什么样。
-                    diagnose_bundle(item);
+                    // 但**只对前 3 个失败项**做：这个诊断要反复全树扫描（几千个文件、每个还要 stat），
+                    // 而实测失败往往批量同因（当年 93 项里 63 项全挂在同一处），逐个再扫一遍是白烧 CPU/IO。
+                    if failed <= 3 {
+                        diagnose_bundle(item);
+                    } else if failed == 4 {
+                        log_msg("  （后续失败项不再逐个诊断：同因批量出现，避免重复全树扫描）");
+                    }
                 }
             }
             continue;

@@ -341,7 +341,17 @@ final class Model: ObservableObject {
         let dst = dir.appendingPathComponent("\(UUID().uuidString)_\(url.lastPathComponent)")
         let a = url.startAccessingSecurityScopedResource()
         defer { if a { url.stopAccessingSecurityScopedResource() } }
-        if (try? fm.copyItem(at: url, to: dst)) != nil {
+        // 优先**硬链接**、其次移动、最后才复制：选择器给的副本本来就在 App 容器内（同一卷），
+        // 链接 / 改名都是瞬时操作、不额外占空间。原来一律 copyItem —— 导入一个几百 MB 的包
+        // 会在主线程整份复制一遍（界面卡住 + 存储翻倍）。
+        var ok = (try? fm.linkItem(at: url, to: dst)) != nil
+        if !ok, (try? fm.moveItem(at: url, to: dst)) != nil {
+            ok = true
+        }
+        if !ok {
+            ok = (try? fm.copyItem(at: url, to: dst)) != nil
+        }
+        if ok {
             // 不再删除上一次导入的 IPA：导入即入库，之后可在下拉里反复选用。
             ipa = dst
             LogStore.shared.append("已导入 IPA（可在下拉中重复选择）：\(url.lastPathComponent)")

@@ -80,7 +80,15 @@ final class IPALibrary: ObservableObject {
         let id = UUID()
         let dst = dir.appendingPathComponent("\(id.uuidString).ipa")
         try? FileManager.default.removeItem(at: dst)
-        guard (try? FileManager.default.copyItem(at: url, to: dst)) != nil else { return nil }
+        // 优先**硬链接**：库目录与产物都在 App 容器内（同一卷），链接是瞬时的、**不额外占空间**，
+        // 两个文件名指向同一份数据（删掉任一路径都不影响另一路径存活）。
+        // 之前一律 copyItem：每次成功流程都会把一个几百 MB～GB 的包整份复制一遍 ——
+        // 主线程卡住、存储翻倍，纯属浪费。
+        // 跨卷 / iCloud 未落地 / 文件系统不支持时才退回复制。
+        let linked = (try? FileManager.default.linkItem(at: url, to: dst)) != nil
+        if !linked {
+            guard (try? FileManager.default.copyItem(at: url, to: dst)) != nil else { return nil }
+        }
 
         let item = SignedIPA(id: id, name: cleanName, path: dst.path, createdAt: Date(), size: size)
         items.insert(item, at: 0)

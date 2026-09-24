@@ -116,6 +116,10 @@ final class PairingController: NSObject, ObservableObject, NetServiceDelegate {
             using: params
         )
         browser.stateUpdateHandler = { [weak self] state in
+            if case .failed = state {
+                // 失败即收工（下面的分支会给出原因）。
+                self?.cancelPermissionProbe()
+            }
             if case let .failed(error) = state {
                 // -65555（kDNSServiceErr_NoAuth）表示本地网络权限未授予：
                 // iOS 在缺少 NSLocalNetworkUsageDescription / NSBonjourServices 时
@@ -136,6 +140,16 @@ final class PairingController: NSObject, ObservableObject, NetServiceDelegate {
         }
         browser.start(queue: .main)
         permissionProbe = browser
+    }
+
+    /// 收工：取消「本地网络授权探测」的那次 Bonjour 浏览。
+    ///
+    /// 那个浏览只有一个目的 —— 触发系统的「本地网络」授权弹窗；触发完没必要常驻，
+    /// 否则它会一直做 mDNS 浏览，空闲时持续唤醒网卡（费电）。
+    /// 调用点：离开配对卡片时、探测失败时、配对流程结束 / 取消时。
+    func cancelPermissionProbe() {
+        permissionProbe?.cancel()
+        permissionProbe = nil
     }
 
     private func advertise(port: Int32) {

@@ -57,6 +57,17 @@ impl Log for Bridge {
             return;
         }
         let msg = record.args().to_string();
+        // 第三个噪声源：bundle_signing 的**逐文件**进度（`copying file …`）。
+        // 一轮签名能打几千到上万行（跨 FFI 转发 + 落盘 + 界面刷新都要吃一遍），而它只在
+        // 「签名中途失败」时才有参考价值 —— 那种情况已由我们自己的
+        // 「签名中断：输出目录已产出文件 …」覆盖。这里只按**消息内容**筛，
+        // `entering nested bundle …` 必须保留（失败时要靠 last_bundle() 指认嫌疑对象）。
+        if record.level() >= log::Level::Info
+            && target.starts_with("apple_codesign::bundle_signing")
+            && (msg.starts_with("copying file") || msg.starts_with("copying directory"))
+        {
+            return;
+        }
         note(&msg);
         log_msg(&format!("[{target}] {msg}"));
     }

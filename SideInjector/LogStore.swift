@@ -34,7 +34,13 @@ final class LogStore: ObservableObject {
     private let lock = NSLock()
     private var pending: [(line: String, important: Bool)] = []
     private var tailLines: [String] = []
+    /// 内存里累积的重要日志字节数（用于给 `text` 加上限，见 `flush`）。
+    private var textBytes = 0
+    /// 内存里保留的日志全文上限（超出后不再累积；完整日志始终在文件里，界面只渲染末尾 200 行）。
+    private static let maxMemoryTextBytes = 512 * 1024
     private let flushInterval: TimeInterval = 0.2
+    /// flush 定时器：**有日志时才存在**（见 `enqueue` / `flush`）。
+    /// 以前是常驻定时器 —— 空闲时也每 0.2 秒唤醒一次主线程，纯耗电。
     private var timer: DispatchSourceTimer?
     private let ioQueue = DispatchQueue(label: "com.sideinjector.logfile", qos: .utility)
 
@@ -47,14 +53,7 @@ final class LogStore: ObservableObject {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("sideinjector.log")
 
-        let t = DispatchSource.makeTimerSource(queue: .main)
-        t.schedule(deadline: .now() + flushInterval,
-                   repeating: flushInterval,
-                   leeway: .milliseconds(50))
-        t.setEventHandler { [weak self] in self?.flush() }
-        t.resume()
-        timer = t
-
+        // 不再在这里起定时器：第一行日志进来时才启动（append → enqueue）。
         append("———— \(Date().formatted(date: .numeric, time: .standard)) ————")
     }
 
@@ -69,6 +68,16 @@ final class LogStore: ObservableObject {
     private func enqueue(_ s: String, important: Bool) {
         lock.lock()
         pending.append((s, important))
+        // 首条日志到来时才起定时器：空闲期完全不唤醒（原来常驻 5 次/秒）。
+        if timer == nil {
+            let t = DispatchSource.makeTimerSource(queue: .main)
+            t.schedule(deadline: .now() + flushInterval,
+                       repeating: flushInterval,
+                       leeway: .milliseconds(50))
+            t.setEventHandler { [weak self] in self?.flush() }
+            t.resume()
+            timer = t
+        }
         lock.unlock()
     }
 
@@ -79,6 +88,7 @@ final class LogStore: ObservableObject {
         tailLines.removeAll()
         lock.unlock()
         text = ""
+        textBytes = 0
         tail = ""
         let url = fileURL
         let old = url.deletingLastPathComponent().appendingPathComponent("sideinjector.1.log")
@@ -110,6 +120,12 @@ final class LogStore: ObservableObject {
         lock.lock()
         let batch = pending
         pending.removeAll(keepingCapacity: true)
+        // 没活了就把定时器停掉：空闲期不该有 0.2 秒一次的唤醒（这是纯耗电）。
+        // 下一次有日志进来时 enqueue 会重新起。
+        if batch.isEmpty && pending.isEmpty {
+            timer?.cancel()
+            timer = nil
+        }
         lock.unlock()
         guard !batch.isEmpty else { return }
 
@@ -121,7 +137,13 @@ final class LogStore: ObservableObject {
         // 2) 只有重要日志进界面
         let important = batch.filter { $0.important }.map { $0.line }
         guard !important.isEmpty else { return }
-        text += important.joined(separator: "\n") + "\n"
+        // 内存里的全文只作「日志文件读不到」时的兜底，所以加上限：
+        // 长期累积会把内存吃成几十 MB（每次拼接也变慢），而界面只渲染末尾 200 行、文件里才是全量。
+        if textBytes < Self.maxMemoryTextBytes {
+            let add = important.joined(separator: "\n") + "\n"
+            textBytes += add.utf8.count
+            text += add
+        }
         tailLines.append(contentsOf: important)
         if tailLines.count > Self.visibleLines {
             tailLines.removeFirst(tailLines.count - Self.visibleLines)

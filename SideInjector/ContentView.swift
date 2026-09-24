@@ -382,6 +382,9 @@ struct ContentView: View {
             }
         }
         .onAppear { PairingController.shared.requestLocalNetworkPermission() }
+        // 离开配对卡片就取消那次「授权探测」的 Bonjour 浏览 ——
+        // 它只为触发系统的本地网络授权弹窗，常驻只会白白 mDNS 浏览（费电）。
+        .onDisappear { PairingController.shared.cancelPermissionProbe() }
     }
 
     // MARK: - 环境自检

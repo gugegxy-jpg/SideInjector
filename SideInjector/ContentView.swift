@@ -81,9 +81,12 @@ struct ContentView: View {
                 pairingCard.cascadeItem(3)
                 envCard.cascadeItem(4)
                 if model.busy || model.stageIndex >= 0 {
-                    progressCard.transition(.cardAppear)
+                    // 与其它卡片一样按序「浮动出现」；保留 transition，流程中途才出现时也能平滑进场。
+                    progressCard
+                        .transition(.cardAppear)
+                        .cascadeItem(5)
                 }
-                actionButton.cascadeItem(5)
+                actionButton.cascadeItem(6)
                 if let _ = model.shareItem {
                     Button {
                         presentingShare = true
@@ -95,7 +98,7 @@ struct ContentView: View {
                     .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
                     .transition(.cardAppear)
                 }
-                logCard.cascadeItem(6)
+                logCard.cascadeItem(7)
             }
             .padding(20)
             .padding(.bottom, 12)
@@ -538,6 +541,8 @@ struct ContentView: View {
         .transition(.cardAppear)
         .animation(.smooth(duration: 0.35), value: model.stageIndex)
         .animation(.smooth(duration: 0.35), value: model.outcome)
+        // 进度条本身也要动：数值变化平滑推进、出现 / 消失（0 → 大于 0）时淡入淡出，而不是硬跳。
+        .animation(.smooth(duration: 0.35), value: model.progress)
     }
 
     private func stepRow(idx: Int, title: String) -> some View {

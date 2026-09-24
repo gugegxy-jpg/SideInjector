@@ -84,6 +84,36 @@ pub fn unzip(ipa: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 从 IPA（zip）里读出主 App 的 `CFBundleIdentifier`。
+///
+/// 用途：安装前预检 —— 判断设备上是否已存在同 Bundle ID 的 App（覆盖升级时若两者证书不同，
+/// installd 会以 `MismatchedApplicationIdentifierEntitlement` 拒绝，而那时整包已经传完了）。
+/// 只读 `Payload/<X>.app/Info.plist` 这一个条目，不解包整包、不改动任何文件。
+pub fn bundle_id_of_ipa(ipa: &Path) -> Option<String> {
+    let file = fs::File::open(ipa).ok()?;
+    let mut archive = ZipArchive::new(file).ok()?;
+    for i in 0..archive.len() {
+        let mut zf = archive.by_index(i).ok()?;
+        // 只要「Payload/<X>.app/Info.plist」这一层（排除 PlugIns/*.appex/Info.plist 等更深层）。
+        let name = zf.name().to_string();
+        let Some(rest) = name.strip_prefix("Payload/") else {
+            continue;
+        };
+        if !rest.ends_with(".app/Info.plist") || rest.matches('/').count() != 1 {
+            continue;
+        }
+        let mut buf = Vec::new();
+        zf.read_to_end(&mut buf).ok()?;
+        let value: plist::Value = plist::from_bytes(&buf).ok()?;
+        return value
+            .as_dictionary()?
+            .get("CFBundleIdentifier")?
+            .as_string()
+            .map(|s| s.to_string());
+    }
+    None
+}
+
 pub fn zip_dir(dir: &Path, out: &Path) -> Result<()> {
     if let Some(parent) = out.parent() {
         fs::create_dir_all(parent)?;

@@ -256,6 +256,50 @@ pub async fn install(
     //   直接杀掉，表现为「安装刚开始就崩溃、没有任何错误日志」。
     //   这里改成 8 MB 分块读 + 逐块写：峰值内存只有几 MB，链路
     //   （AFC → PublicStaging → installation_proxy Install）与上游完全一致。
+    // 6.5) 安装前预检：设备上是否已存在同 Bundle ID 的 App —— **只提示，绝不卸载**。
+    //
+    // 为什么值得：覆盖升级要求新旧包用**同一张证书**签名，否则 installd 会以
+    // `MismatchedApplicationIdentifierEntitlement` 拒绝 —— 而那时整包（可能几百 MB）已经传完，
+    // 白等一轮（实测踩过三次）。这里在上传**之前**把事实摆出来，用户自己决定先卸载还是改 ID。
+    // 目标 Bundle ID 直接从待安装的 IPA 里读，不依赖流程里填过什么。
+    if let Some(target) = crate::ziputil::bundle_id_of_ipa(ipa) {
+        match InstallationProxyClient::connect_rsd(&mut handle, &mut handshake).await {
+            Ok(mut client) => match client.get_apps(Some("Any"), Some(vec![target.clone()])).await {
+                Ok(apps) => match apps.get(&target) {
+                    Some(info) => {
+                        let version = info
+                            .as_dictionary()
+                            .and_then(|d| d.get("CFBundleShortVersionString"))
+                            .and_then(|v| v.as_string())
+                            .unwrap_or("?");
+                        let kind = info
+                            .as_dictionary()
+                            .and_then(|d| d.get("ApplicationType"))
+                            .and_then(|v| v.as_string())
+                            .unwrap_or("?");
+                        log_msg(&format!(
+                            "install: ⚠️ 预检 —— 设备上已存在同 Bundle ID 的 App：{target}（版本 {version}；类型 {kind}）"
+                        ));
+                        log_msg(
+                            "install: ⚠️ 覆盖升级要求两个包用同一张证书签名；若它是 App Store 正版或用别家证书装的，\
+                             installd 会以 MismatchedApplicationIdentifierEntitlement 拒绝（那时整包已上传完成）。",
+                        );
+                        log_msg(
+                            "install: ⚠️ 处理（二选一）：① 先在设备上卸载它再安装；② 在流程里改一个不同的 Bundle ID（共存安装）。",
+                        );
+                    }
+                    None => log_msg(&format!(
+                        "install: 预检 —— 设备上没有同 Bundle ID（{target}）的 App，属全新安装"
+                    )),
+                },
+                Err(e) => log_msg(&format!("install: 预检跳过（查询已装应用失败）：{e:?}")),
+            },
+            Err(e) => log_msg(&format!(
+                "install: 预检跳过（连接 installation_proxy 失败）：{e:?}"
+            )),
+        }
+    }
+
     let local_size = std::fs::metadata(ipa)
         .map(|m| m.len())
         .with_context(|| format!("读取待安装 IPA 大小失败：{}", ipa.display()))?;

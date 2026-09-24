@@ -86,9 +86,21 @@ enum TunnelNet {
             || name.hasPrefix("ppp") || name.hasPrefix("tap")
     }
 
-    /// loopback VPN 的隧道接口及其地址；为空即表示 VPN 未连接。
+    /// 隧道接口及其地址（**任何** VPN 都算：Shadowrocket、公司 VPN … 都会建 utun）。
     static func vpnInterfaces() -> [(name: String, ip: String)] {
         allIPv4().filter { isTunnelInterface($0.name) }
+    }
+
+    /// **LocalDevVPN（loopback VPN）** 是否已连接。
+    ///
+    /// 为什么不能只看"有没有 utun"：任何 VPN 都会建 utun，那样一开别家 VPN 就会被当成
+    /// LocalDevVPN 已连接（实测：连 Shadowrocket 时标题栏直接变绿），误导安装判断。
+    ///
+    /// loopback VPN 的特征是**隧道上带着 `10.7.x.x` 地址** —— 设备侧 VPN 服务出口就在这个网段
+    /// （`candidateHosts` 与 README 里记录的 10.7.0.1 / 10.7.0.2 就是它；`allIPv4()` 会把
+    /// 对端地址也一并列出，所以两端地址都能命中）。
+    static func isLocalDevVPNUp() -> Bool {
+        vpnInterfaces().contains { $0.ip.hasPrefix("10.7.") }
     }
 
     /// WiFi 接口（en0…）及其地址；为空即表示 WiFi 未连接或没拿到地址。
@@ -147,11 +159,17 @@ enum EnvProbe {
         s.osVersion = os.version
         s.osBuild = os.build
         s.selfPairCapable = isSelfPairCapable(os.version)
-        let vpn = TunnelNet.vpnInterfaces()
-        s.vpnUp = !vpn.isEmpty
-        s.vpnDetail = vpn.isEmpty
-            ? "未发现 utun/ipsec/ppp/tap 隧道接口（请先打开 LocalDevVPN）"
-            : vpn.map { "\($0.name) · \($0.ip)" }.joined(separator: "、")
+        let tunnels = TunnelNet.vpnInterfaces()
+        s.vpnUp = TunnelNet.isLocalDevVPNUp()
+        if tunnels.isEmpty {
+            s.vpnDetail = "未发现 utun/ipsec/ppp/tap 隧道接口（请先打开 LocalDevVPN）"
+        } else {
+            let list = tunnels.map { "\($0.name) · \($0.ip)" }.joined(separator: "、")
+            s.vpnDetail = s.vpnUp
+                ? list
+                : "有隧道接口但都不是 LocalDevVPN：\(list)"
+                    + "（loopback VPN 需要在隧道上带 10.7.x.x 地址）"
+        }
         return s
     }
 }
@@ -190,7 +208,8 @@ final class InstallEngine {
         // loopback VPN 隧道 → RSD → AFC/installation_proxy → installd；WiFi 本身不提供通路。
         // 这里记一行，方便事后判断「关掉 WiFi 时到底还能不能装」以及 VPN 是否依赖网络接口。
         let wifiOn = !TunnelNet.wifiInterfaces().isEmpty
-        let vpnOn = !TunnelNet.vpnInterfaces().isEmpty
+        // 用「LocalDevVPN 在不在」而不是「有没有隧道接口」：别家 VPN（Shadowrocket 等）也会建 utun。
+        let vpnOn = TunnelNet.isLocalDevVPNUp()
         LogStore.shared.append("install: 网络环境：WiFi \(wifiOn ? "已连接" : "未连接")"
                                + " · LocalDevVPN \(vpnOn ? "已连接" : "未连接")")
 

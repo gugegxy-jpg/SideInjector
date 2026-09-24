@@ -45,8 +45,9 @@ final class NetworkMonitor: ObservableObject {
             } else {
                 text = "其他网络"
             }
-            // 隧道接口现算一次：有 utun/ipsec/ppp 才算 LocalDevVPN 连上了。
-            let vpn = !TunnelNet.vpnInterfaces().isEmpty
+            // 每次路径变化都重算一次：只有**带 10.7.x.x 地址**的隧道才算 LocalDevVPN 连上了
+            // （别的 VPN 也会建 utun，不能只看"有没有隧道接口"）。
+            let vpn = TunnelNet.isLocalDevVPNUp()
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.wifiUp = wifi

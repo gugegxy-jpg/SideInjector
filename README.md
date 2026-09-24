@@ -81,7 +81,9 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       「把日志拿出来」，所以直接做成复制
 - [x] **顶部状态实时显示**：标题栏副标题为 `iOS 版本 · LocalDevVPN 已连接/未连接 · WiFi 已连接/未连接`
       （原来是「Liquid Glass · iOS 26+」这类外观描述，对使用者没有信息量）。用 `NWPathMonitor` 实时刷新，
-      开关 WiFi / 连接或断开 VPN 都会立刻反映；判据与「环境自检」一致（VPN = 存在 utun/ipsec/ppp 隧道接口）。
+      开关 WiFi / 连接或断开 VPN 都会立刻反映；判据与「环境自检」一致：**LocalDevVPN 看的是
+      "隧道上带 10.7.x.x 地址"**，而不是"存在 utun/ipsec/ppp 隧道接口" —— 后者会把 Shadowrocket
+      这类普通 VPN 也当成 LocalDevVPN 已连接（实测踩过）。
       说明：**安装链路不访问外网**——全程是本机内的 loopback VPN 隧道 → RSD → AFC/installation_proxy → installd，
       WiFi 本身不提供通路（连自己的 LAN 地址仍走本机回环，沙盒限制相同）；安装开始时也会记一行
       `install: 网络环境：WiFi … · LocalDevVPN …`，便于事后对照
@@ -90,8 +92,8 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       （`BlurOnly` + `UIViewRepresentable`）。模糊一层平滑渐变 ≈ 原来的渐变，所以空着时看不见；
       内容滑到它下面立刻呈现毛玻璃感。**刻意不用** `.ultraThinMaterial` / `.glassEffect`：它们除模糊外
       还叠一层填充色（玻璃还带高光），在深色渐变背景上会浮出一条能看出来的"带子"。**强度也不能整条一样**：
-      模糊会轻微去色，等强时边界仍看得出来，所以强度做成自上而下的渐变 —— 顶端约 0.7（系统状态栏文字
-      所在处，必须压住），往下递减到 0，越往下越淡直到与背景无差；想更淡/更明显就调 `StatusBarMask`
+      模糊会轻微去色，等强时边界仍看得出来，所以强度做成自上而下的渐变 —— 顶端约 0.5（看得出糊了、
+      但不至于像一块实心玻璃），往下递减到 0，越往下越淡直到与背景无差；想更淡/更明显就调 `StatusBarMask`
       里 mask 那几个 opacity。高度 = `safeAreaInsets.top + 14`，整层 `allowsHitTesting(false)`（不吃点击），
       两个页签都受保护。曾试过两条岔路，都撤了：① 「iOS 26+ 交给系统的 scroll edge effect」——
       本 App 无导航栏 / `safeAreaBar`，系统那层**实测不出现**（iOS 27 状态栏完全透明）；

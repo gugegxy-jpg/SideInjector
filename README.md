@@ -53,7 +53,9 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
 
 - [x] IPA 解包 / 打包（保留符号链接与权限位）
 - [x] 主二进制注入 dylib，支持一次注入多个（注入名取各自文件名；重名自动加后缀）
-- [x] 改 Bundle ID / 显示名
+- [x] 改 Bundle ID / 显示名：导入 IPA 后把「当前值」作为**提示**显示（**不预填输入框**，留空仍然表示不改），
+      且**只有真正改过才写 `Info.plist`**；嵌套扩展的 Bundle ID 只在主 ID 变了时连带同步，
+      另配**显式开关**「同步嵌套扩展 Bundle ID」用于修复第三方改包自带的错配（扩展 ID 是运行时身份，不做自动改写）
 - [x] 进程内重签：`apple-codesign` 0.27。嵌套项（framework / appex）**逐个只重签主可执行文件**，
       并把签名标识强制设为该 bundle 的 `CFBundleIdentifier`（否则 installd 报 `MismatchedBundleIDSigningIdentifier`）；
       资源 bundle 仍按 bundle 级签名（只封资源）；最后**浅签主 App**，把全部内容封进主 App 的 `CodeResources`

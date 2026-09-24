@@ -134,6 +134,59 @@ pub extern "C" fn si_set_bundle_info(
     }
 }
 
+/// 读取 IPA 自带信息（**只读**，不解包、不改任何文件），返回 JSON：
+/// `{"bundleId":"…","displayName":"…","extensionMismatch":["…"]}`；
+/// 失败返回 null。Swift 侧用 `si_string_free` 释放。
+///
+/// 用途：首页把「当前值」作为**提示**展示（而不是填进输入框），并判断用户是否真的改过；
+/// 同时在导入时就提示「这个包自带扩展 ID 前缀错配」（那种包不改就装不上）。
+#[no_mangle]
+pub extern "C" fn si_ipa_info(ipa: *const c_char) -> *mut c_char {
+    let Some(ipa) = to_str(ipa) else {
+        return std::ptr::null_mut();
+    };
+    match ziputil::ipa_info(std::path::Path::new(&ipa)) {
+        Ok(info) => {
+            let json = serde_json::json!({
+                "bundleId": info.bundle_id,
+                "displayName": info.display_name,
+                "extensionMismatch": info.mismatched_extensions,
+            })
+            .to_string();
+            match CString::new(json) {
+                Ok(c) => c.into_raw(),
+                Err(_) => std::ptr::null_mut(),
+            }
+        }
+        Err(e) => {
+            log_msg(&format!("读取 IPA 信息失败：{e}"));
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// **显式**把嵌套扩展的 Bundle ID 对齐到主 App（修复第三方改包自带的错配）。
+///
+/// 只有用户主动勾选「同步嵌套扩展 Bundle ID」时才会调用 —— 改扩展 ID 属于产物语义变更
+/// （见 bundle::sync_extension_ids 的说明），不做自动触发。
+#[no_mangle]
+pub extern "C" fn si_sync_extension_ids(app: *const c_char) -> c_int {
+    let Some(app) = to_str(app) else {
+        log_msg("si_sync_extension_ids: null app");
+        return -1;
+    };
+    match bundle::sync_extension_ids(std::path::Path::new(&app)) {
+        Ok(n) => {
+            log_msg(&format!("嵌套扩展 Bundle ID 同步：共改写 {n} 个"));
+            0
+        }
+        Err(e) => {
+            log_msg(&format!("sync_extension_ids error: {e}"));
+            -1
+        }
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn si_sign_bundle(
     app: *const c_char,

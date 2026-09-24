@@ -84,34 +84,85 @@ pub fn unzip(ipa: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 从 IPA（zip）里读出主 App 的 `CFBundleIdentifier`。
+/// IPA 自带的关键信息（只读）。
+#[derive(Default)]
+pub struct IpaInfo {
+    /// 主 App 的 `CFBundleIdentifier`。
+    pub bundle_id: Option<String>,
+    /// 显示名（优先 `CFBundleDisplayName`，退回 `CFBundleName`）。
+    pub display_name: Option<String>,
+    /// 「扩展 Bundle ID 不以主 App ID 为前缀」的列表 —— 非空表示这个包**自带错配**，不改就装不上。
+    pub mismatched_extensions: Vec<String>,
+}
+
+/// 从 IPA（zip）里读出主 App 信息：Bundle ID、显示名，以及前缀不符的扩展 ID。
 ///
-/// 用途：安装前预检 —— 判断设备上是否已存在同 Bundle ID 的 App（覆盖升级时若两者证书不同，
-/// installd 会以 `MismatchedApplicationIdentifierEntitlement` 拒绝，而那时整包已经传完了）。
-/// 只读 `Payload/<X>.app/Info.plist` 这一个条目，不解包整包、不改动任何文件。
-pub fn bundle_id_of_ipa(ipa: &Path) -> Option<String> {
-    let file = fs::File::open(ipa).ok()?;
-    let mut archive = ZipArchive::new(file).ok()?;
+/// 只读 `Payload/<X>.app/Info.plist` 与 `Payload/**/*.appex/Info.plist`，**不解包整包、不改任何文件**。
+/// 用途：① 首页把「当前值」作为提示展示（而不是填进输入框）；② 判断用户是否真的改过 Bundle ID；
+///      ③ 导入时就提示「这个包自带扩展前缀错配」，省掉一次签名与上传（实测白传过 636 MB）。
+pub fn ipa_info(ipa: &Path) -> Result<IpaInfo> {
+    let file = fs::File::open(ipa).with_context(|| format!("打开 IPA 失败：{}", ipa.display()))?;
+    let mut archive = ZipArchive::new(file).context("解析 IPA（zip）失败")?;
+    let mut info = IpaInfo::default();
+    let mut extension_ids: Vec<String> = Vec::new();
+
     for i in 0..archive.len() {
-        let mut zf = archive.by_index(i).ok()?;
-        // 只要「Payload/<X>.app/Info.plist」这一层（排除 PlugIns/*.appex/Info.plist 等更深层）。
+        let mut zf = match archive.by_index(i) {
+            Ok(z) => z,
+            Err(_) => continue,
+        };
         let name = zf.name().to_string();
         let Some(rest) = name.strip_prefix("Payload/") else {
             continue;
         };
-        if !rest.ends_with(".app/Info.plist") || rest.matches('/').count() != 1 {
+        // 主 App 只认「Payload/<X>.app/Info.plist」这一层；扩展认任意深度的 *.appex。
+        let is_main = rest.ends_with(".app/Info.plist") && rest.matches('/').count() == 1;
+        let is_ext = rest.ends_with(".appex/Info.plist");
+        if !is_main && !is_ext {
             continue;
         }
         let mut buf = Vec::new();
-        zf.read_to_end(&mut buf).ok()?;
-        let value: plist::Value = plist::from_bytes(&buf).ok()?;
-        return value
-            .as_dictionary()?
-            .get("CFBundleIdentifier")?
-            .as_string()
-            .map(|s| s.to_string());
+        if zf.read_to_end(&mut buf).is_err() {
+            continue;
+        }
+        let Ok(value) = plist::from_bytes::<plist::Value>(&buf) else {
+            continue;
+        };
+        let Some(dict) = value.as_dictionary() else {
+            continue;
+        };
+        let get = |k: &str| {
+            dict.get(k)
+                .and_then(|v| v.as_string())
+                .map(|s| s.to_string())
+        };
+        let Some(id) = get("CFBundleIdentifier") else {
+            continue;
+        };
+        if is_main {
+            info.bundle_id = Some(id);
+            info.display_name = get("CFBundleDisplayName").or_else(|| get("CFBundleName"));
+        } else if dict.get("NSExtension").is_some() || dict.get("WKWatchKitApp").is_some() {
+            extension_ids.push(id);
+        }
     }
-    None
+
+    if let Some(main) = &info.bundle_id {
+        let prefix = format!("{main}.");
+        info.mismatched_extensions = extension_ids
+            .into_iter()
+            .filter(|e| !e.starts_with(&prefix))
+            .collect();
+    }
+    Ok(info)
+}
+
+/// 从 IPA 里读出主 App 的 `CFBundleIdentifier`。
+///
+/// 用途：安装前预检 —— 判断设备上是否已存在同 Bundle ID 的 App（覆盖升级时若两者证书不同，
+/// installd 会以 `MismatchedApplicationIdentifierEntitlement` 拒绝，而那时整包已经传完了）。
+pub fn bundle_id_of_ipa(ipa: &Path) -> Option<String> {
+    ipa_info(ipa).ok().and_then(|i| i.bundle_id)
 }
 
 pub fn zip_dir(dir: &Path, out: &Path) -> Result<()> {

@@ -301,15 +301,35 @@ struct ContentView: View {
                     }
                 }
                 Divider()
-                TextField("Bundle ID（留空不改）", text: $model.bundleId)
+                TextField(model.bundleIdPlaceholder, text: $model.bundleId)
                     .textFieldStyle(.plain)
                     .fieldBackground()
                     .autocapitalization(.none)
                     .disableAutocorrection(true)
+                if !model.ipaBundleId.isEmpty {
+                    Text("这个 IPA 当前的 Bundle ID 是 \(model.ipaBundleId)，留空即不改")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 Divider()
-                TextField("显示名称（留空不改）", text: $model.displayName)
+                TextField(model.displayNamePlaceholder, text: $model.displayName)
                     .textFieldStyle(.plain)
                     .fieldBackground()
+                if !model.ipaDisplayName.isEmpty {
+                    Text("当前的显示名是 \(model.ipaDisplayName)，留空即不改")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                if !model.ipaExtensionMismatch.isEmpty {
+                    Text("⚠️ 这个 IPA 自带错配：\(model.ipaExtensionMismatch.count) 个扩展的 Bundle ID 与主 App 前缀不符，原样签名也装不上")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+                Toggle(isOn: $model.syncExtensionIDs) {
+                    Text("同步嵌套扩展 Bundle ID（修复第三方改包，仅勾选时执行）")
+                        .font(.caption)
+                }
+                .disabled(model.busy)
                 Divider()
                 FileRow(title: "配对文件 (经典通路/手动安装需要)", url: $model.pairingFile)
             }

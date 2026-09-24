@@ -20,6 +20,12 @@ func si_zip_ipa(_ dir: UnsafePointer<CChar>, _ out: UnsafePointer<CChar>) -> Int
 @_silgen_name("si_set_bundle_info")
 func si_set_bundle_info(_ app: UnsafePointer<CChar>, _ bundleId: UnsafePointer<CChar>?, _ displayName: UnsafePointer<CChar>?) -> Int32
 
+@_silgen_name("si_ipa_info")
+func si_ipa_info(_ ipa: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+
+@_silgen_name("si_sync_extension_ids")
+func si_sync_extension_ids(_ app: UnsafePointer<CChar>) -> Int32
+
 @_silgen_name("si_install_ipa")
 func si_install_ipa(_ ipa: UnsafePointer<CChar>, _ pairing: UnsafePointer<CChar>?) -> Int32
 
@@ -113,6 +119,21 @@ final class RustBridge {
                 displayName.withCString { d in si_set_bundle_info(a, b, d) }
             }
         }
+    }
+
+    /// 读取 IPA 自带信息（JSON：bundleId / displayName / extensionMismatch）。
+    /// **只读**：不解包、不改任何文件；只读 zip 的中央目录与两个极小的 Info.plist。
+    /// 注意：解析成本 ∝ 条目数，调用方应放到后台线程（见 Model.refreshIpaInfo）。
+    func ipaInfo(ipa: String) -> String? {
+        guard let p = ipa.withCString({ si_ipa_info($0) }) else { return nil }
+        defer { si_string_free(p) }
+        return String(cString: p)
+    }
+
+    /// **显式**把嵌套扩展的 Bundle ID 对齐到主 App（修复第三方改包自带的错配）。
+    /// 只有用户主动勾选「同步嵌套扩展 Bundle ID」时才应调用。
+    func syncExtensionIDs(app: String) -> Int32 {
+        app.withCString { si_sync_extension_ids($0) }
     }
 
     /// 安装到设备。`pairing` 为配对文件路径（经典通路需要；RSD 通路可传 nil）。

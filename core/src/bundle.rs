@@ -74,16 +74,41 @@ pub fn set_bundle_info(
     fs::write(&plist_path, &out)?;
     log_msg("Bundle 信息已写入 Info.plist");
 
-    // 同步改写嵌套扩展（.appex / Watch App）的 Bundle ID。
+    // 同步改写嵌套扩展（.appex / Watch App）的 Bundle ID —— **只在主 ID 真的变了时**才做。
     //
-    // 即使填的 ID 与当前值**相同**也执行：这样用户可以「重填一次相同 ID」来显式修复
-    // 第三方破包自带的错配（主 ID 被改过、扩展没跟着改），而不需要工具去静默改产物。
-    if let Some(new_id) = bundle_id {
-        let old_id = old_main_id.as_deref().unwrap_or(new_id);
-        let n = rewrite_extension_ids(app_dir, old_id, new_id);
-        log_msg(&format!("嵌套扩展 Bundle ID 同步：共改写 {n} 个"));
+    // 为什么严格限定：改扩展 ID 属于产物语义变更（扩展 ID 被硬编码引用时会让分享/小组件等功能
+    // 静默失效）；而只要主 ID 变了，扩展不改就必然装不上，所以这个连带改写是必需的。
+    // 至于「主 ID 不变、只想修第三方破包自带的扩展错配」，走**显式**入口 `sync_extension_ids()`
+    // （Swift 侧需用户主动勾选「同步嵌套扩展 ID」），绝不自动触发。
+    if let (Some(new_id), Some(old_id)) = (bundle_id, old_main_id.as_deref()) {
+        if new_id != old_id {
+            let n = rewrite_extension_ids(app_dir, old_id, new_id);
+            log_msg(&format!("嵌套扩展 Bundle ID 同步：共改写 {n} 个"));
+        }
     }
     Ok(())
+}
+
+/// 显式修复入口：把嵌套扩展的 Bundle ID 对齐成「以主 App 当前 Bundle ID 为前缀」。
+///
+/// **只应在用户显式要求时调用**（Swift 侧勾选「同步嵌套扩展 Bundle ID」）。为什么不做自动：
+/// 改扩展 ID 属于产物语义变更 —— 扩展 ID 是运行时身份，主 App 里若有硬编码引用
+/// （`NSUserDefaults(suiteName:)` 派生的键、URL scheme、推送 topic、共享容器…），改名会让这些
+/// 功能静默失效，而这种引用无法预知。所以把它交给用户决定，并配明确日志。
+///
+/// 返回改写的个数。
+pub fn sync_extension_ids(app_dir: &Path) -> Result<usize> {
+    let plist_path = app_dir.join("Info.plist");
+    let data = fs::read(&plist_path)?;
+    let value: Value = plist::from_bytes(&data)?;
+    let main_id = value
+        .as_dictionary()
+        .and_then(|d| d.get("CFBundleIdentifier"))
+        .and_then(|v| v.as_string())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("主 App 的 Info.plist 没有 CFBundleIdentifier"))?;
+    // 旧主 ID 就用当前主 ID：破包里扩展 ID 通常不以其为前缀，会走「最后一个点号之后」的兜底。
+    Ok(rewrite_extension_ids(app_dir, &main_id, &main_id))
 }
 
 /// 把嵌套扩展（含 Watch App）的 Bundle ID 改写成 `new_main.后缀`。

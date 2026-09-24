@@ -42,13 +42,117 @@ final class Model: ObservableObject {
     @Published var pairingFile: URL?
 
     // MARK: - 输入
-    @Published var ipa: URL?
+    /// 选中的 IPA。切换时顺带读一次它自带的 Bundle ID / 显示名（只读，用于提示与「是否改过」判定）。
+    @Published var ipa: URL? {
+        didSet { refreshIpaInfo() }
+    }
     /// 已导入到持久目录的 IPA 列表：首页可像选证书一样直接下拉选择，无需每次重选文件。
     @Published var savedIPAs: [URL] = []
     /// 可一次选择多个 dylib，逐个注入（注入名默认取各自文件名）。
     @Published var dylibs: [URL] = []
     @Published var bundleId: String = ""
     @Published var displayName: String = ""
+
+    // MARK: - 当前 IPA 自带信息（**只作提示**，不会自动填进输入框）
+
+    /// 当前 IPA 自带的 Bundle ID（空 = 未知 / 还没读到）。
+    @Published var ipaBundleId: String = ""
+    /// 当前 IPA 自带的显示名（优先 `CFBundleDisplayName`，退回 `CFBundleName`）。
+    @Published var ipaDisplayName: String = ""
+    /// 当前 IPA 里「扩展 Bundle ID 不以主 App ID 为前缀」的列表 —— 非空说明这个包**自带错配**。
+    @Published var ipaExtensionMismatch: [String] = []
+    /// 显式修复开关：勾选后才会把嵌套扩展的 Bundle ID 对齐到主 App（修复第三方改包用）。
+    @Published var syncExtensionIDs: Bool = false
+
+    /// 输入框提示语：把「当前值」写在提示里，而**不是**填成输入值 —— 输入框的语义是「留空 = 不改」。
+    /// （若预填成值，流程第 2 步就必然执行，会连带改写 `CFBundleName`、并在用户什么都没改的
+    ///   情况下触发扩展 ID 同步，属于静默改变产物语义。）
+    var bundleIdPlaceholder: String {
+        ipaBundleId.isEmpty ? "Bundle ID（留空不改）" : "Bundle ID（当前：\(ipaBundleId)，留空不改）"
+    }
+    var displayNamePlaceholder: String {
+        ipaDisplayName.isEmpty ? "显示名称（留空不改）" : "显示名称（当前：\(ipaDisplayName)，留空不改）"
+    }
+
+    /// IPA 信息缓存：同一个文件只解析一次（键 = 路径，另存大小 + 修改时间判断文件是否变过）。
+    ///
+    /// 为什么需要：解析 zip 必须读**整个中央目录**，成本与条目数成正比（大 IPA 在设备上可达
+    /// 几十到几百毫秒），而用户常在已导入的多个 IPA 之间来回切换 —— 缓存后切换是瞬时的。
+    private var ipaInfoCache: [String: (size: UInt64, mtime: Date, bundleId: String, displayName: String, mismatched: [String])] = [:]
+    /// 读取序号：连续切换时丢弃过期结果（先发起的一次若后返回，不得覆盖当前选择的信息）。
+    private var ipaInfoToken = 0
+
+    /// 文件大小 + 修改时间（判断缓存是否还有效）。只是 stat，很轻，可在主线程调用。
+    private static func fileStamp(_ url: URL) -> (size: UInt64, mtime: Date)? {
+        guard let a = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = a[.size] as? UInt64,
+              let mtime = a[.modificationDate] as? Date else { return nil }
+        return (size, mtime)
+    }
+
+    /// 把读到的信息写进界面状态（**只在主线程调用**）。
+    private func applyIpaInfo(_ info: (bundleId: String, displayName: String, mismatched: [String])) {
+        ipaBundleId = info.bundleId
+        ipaDisplayName = info.displayName
+        ipaExtensionMismatch = info.mismatched
+        if !info.mismatched.isEmpty {
+            LogStore.shared.append("⚠️ 这个 IPA 自带错配：\(info.mismatched.count) 个扩展的 Bundle ID 与主 App 前缀不符（\(info.mismatched.joined(separator: "、"))）——不改就装不上；可在输入区勾选「同步嵌套扩展 Bundle ID」修复")
+        }
+    }
+
+    /// 读取当前 IPA 自带信息：**后台线程 + 缓存**，只读、不解包、不改文件。
+    ///
+    /// 关于「大 IPA」：这一步**不会**读 637 MB 的包体 —— zip 的条目索引集中在中央目录里，
+    /// 我们只读索引 + 两个极小的 `Info.plist`（主 App 与扩展），包体一个字节都不解压。
+    /// 但索引大小 ∝ 条目数（大包上万条），仍有几十到几百毫秒，所以：
+    ///   - 放在后台队列，不阻塞界面；
+    ///   - 同一个文件只解析一次，来回切换已导入的 IPA 秒回；
+    ///   - 用序号丢弃过期结果，快速连续切换不会串台。
+    func refreshIpaInfo() {
+        ipaInfoToken += 1
+        let token = ipaInfoToken
+        guard let url = ipa else {
+            ipaBundleId = ""
+            ipaDisplayName = ""
+            ipaExtensionMismatch = []
+            return
+        }
+        let path = url.path
+        let stamp = Self.fileStamp(url)
+        // 命中缓存且文件没变 → 直接应用，完全不碰磁盘。
+        if let stamp, let c = ipaInfoCache[path], c.size == stamp.size, c.mtime == stamp.mtime {
+            applyIpaInfo((bundleId: c.bundleId, displayName: c.displayName, mismatched: c.mismatched))
+            return
+        }
+        // 未命中：先清空，避免把上一个 IPA 的值当成本包的值显示出来。
+        ipaBundleId = ""
+        ipaDisplayName = ""
+        ipaExtensionMismatch = []
+        DispatchQueue.global(qos: .utility).async {
+            let parsed = Self.parseIpaInfo(RustBridge.shared.ipaInfo(ipa: path))
+            DispatchQueue.main.async {
+                guard token == self.ipaInfoToken else { return } // 过期结果，丢弃
+                if let stamp {
+                    self.ipaInfoCache[path] = (size: stamp.size, mtime: stamp.mtime,
+                                               bundleId: parsed.bundleId,
+                                               displayName: parsed.displayName,
+                                               mismatched: parsed.mismatched)
+                }
+                self.applyIpaInfo(parsed)
+            }
+        }
+    }
+
+    /// 解析 `si_ipa_info` 返回的 JSON（纯函数，可在任意线程调用）。
+    private static func parseIpaInfo(_ json: String?) -> (bundleId: String, displayName: String, mismatched: [String]) {
+        guard let json, let data = json.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return ("", "", [])
+        }
+        return (obj["bundleId"] as? String ?? "",
+                obj["displayName"] as? String ?? "",
+                obj["extensionMismatch"] as? [String] ?? [])
+    }
 
     // MARK: - 运行状态
     @Published var status: String = "空闲"
@@ -518,15 +622,30 @@ final class Model: ObservableObject {
                 case 2:
                     let b = ctx.bundleId.trimmingCharacters(in: .whitespacesAndNewlines)
                     let d = ctx.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if b.isEmpty && d.isEmpty {
+                    // 「没改」判定：留空，或与 IPA 自带的当前值**完全相同** → 什么都不写。
+                    // 这样即便用户手动填了与当前相同的值，也不会连带触发扩展 ID 同步
+                    // （改扩展 ID 属于产物语义变更，只能由显式开关触发）。
+                    let original = Self.parseIpaInfo(RustBridge.shared.ipaInfo(ipa: ctx.ipaCopy.path))
+                    let bChanged = !b.isEmpty && b != original.bundleId
+                    let dChanged = !d.isEmpty && d != original.displayName
+                    let sync = self.syncExtensionIDs
+                    if !bChanged && !dChanged && !sync {
                         self.markSkipped(2, "未修改 Bundle 信息，跳过")
                     } else {
                         guard let app = self.resolveApp(tmp: ctx.tmp) else {
                             self.pause(at: 2, reason: "未在 Payload 中找到 .app"); return
                         }
                         self.markRunning(2, "修改 Bundle 信息…")
-                        if r.setBundleInfo(app: app.path, bundleId: b, displayName: d) != 0 {
-                            self.pause(at: 2, reason: "修改 Bundle 信息失败"); return
+                        if bChanged || dChanged {
+                            if r.setBundleInfo(app: app.path,
+                                               bundleId: bChanged ? b : "",
+                                               displayName: dChanged ? d : "") != 0 {
+                                self.pause(at: 2, reason: "修改 Bundle 信息失败"); return
+                            }
+                        }
+                        // 显式修复：把嵌套扩展的 Bundle ID 对齐到主 App（只有勾选开关才会走到这里）。
+                        if sync && r.syncExtensionIDs(app: app.path) != 0 {
+                            self.pause(at: 2, reason: "同步嵌套扩展 Bundle ID 失败"); return
                         }
                         self.markDone(2)
                     }

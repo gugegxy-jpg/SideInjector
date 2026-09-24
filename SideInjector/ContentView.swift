@@ -78,12 +78,12 @@ struct ContentView: View {
                 header.cascadeItem(0)
                 certCard.cascadeItem(1)
                 inputCard.cascadeItem(2)
-                pairingCard
-                envCard
+                pairingCard.cascadeItem(3)
+                envCard.cascadeItem(4)
                 if model.busy || model.stageIndex >= 0 {
                     progressCard.transition(.cardAppear)
                 }
-                actionButton.cascadeItem(4)
+                actionButton.cascadeItem(5)
                 if let _ = model.shareItem {
                     Button {
                         presentingShare = true
@@ -95,7 +95,7 @@ struct ContentView: View {
                     .buttonStyle(PrimaryButtonStyle(gradient: Theme.gradient(.green)))
                     .transition(.cardAppear)
                 }
-                logCard.cascadeItem(5)
+                logCard.cascadeItem(6)
             }
             .padding(20)
             .padding(.bottom, 12)

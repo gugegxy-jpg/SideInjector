@@ -118,6 +118,8 @@ struct ContentView: View {
         TabView(selection: $tab) {
             Tab("主页", systemImage: "house.fill", value: 0) { homeTab }
             Tab("库", systemImage: "books.vertical.fill", value: 1) { LibraryView() }
+            // 设置放最后（底部栏「库」右侧）。
+            Tab("设置", systemImage: "gearshape.fill", value: 2) { SettingsView() }
         }
         .siFloatingTabBar()
     }
@@ -126,7 +128,13 @@ struct ContentView: View {
     private var legacyTabLayout: some View {
         VStack(spacing: 0) {
             Group {
-                if tab == 0 { homeTab } else { LibraryView() }
+                if tab == 0 {
+                    homeTab
+                } else if tab == 1 {
+                    LibraryView()
+                } else {
+                    SettingsView()
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             legacyTabBar
@@ -137,6 +145,7 @@ struct ContentView: View {
         HStack(spacing: 0) {
             legacyTabButton(0, "主页", "house.fill")
             legacyTabButton(1, "库", "books.vertical.fill")
+            legacyTabButton(2, "设置", "gearshape.fill")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 10)

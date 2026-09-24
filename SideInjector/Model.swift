@@ -158,9 +158,54 @@ final class Model: ObservableObject {
     @Published var status: String = "空闲"
     @Published var outcome: RunOutcome = .idle {
         didSet {
-            // 执行期间不让设备息屏（息屏会把 App 挂起，流程直接断在半路）。
-            // 挂在状态上而不是散在流程各处调用：任何一条退出路径（完成 / 失败 / 取消）都会自动恢复。
-            ScreenAwake.set(busy)
+            // 任何一次状态变化都重新应用「执行期间不被打断」的两项措施：
+            // 开始 / 继续 → 自动开启，完成 / 失败 / 取消 → 自动恢复。
+            applyRunGuards()
+        }
+    }
+
+    // MARK: - 设置（持久化到 UserDefaults）
+
+    /// 执行期间不让设备息屏（默认开）。
+    @Published var keepScreenAwake: Bool = (UserDefaults.standard.object(forKey: "keepScreenAwake") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(keepScreenAwake, forKey: "keepScreenAwake")
+            applyRunGuards()
+        }
+    }
+
+    /// 执行期间后台音频保活：**锁屏 / 切后台也能继续安装**（默认关；会全程持有一个静音音频会话）。
+    @Published var keepAliveInBackground: Bool = UserDefaults.standard.bool(forKey: "keepAliveInBackground") {
+        didSet {
+            UserDefaults.standard.set(keepAliveInBackground, forKey: "keepAliveInBackground")
+            applyRunGuards()
+        }
+    }
+
+    /// 「保活」是不是本次流程开的 —— 只关自己开的那个（配对流程也在用同一个 KeepAlive）。
+    private var runKeepAliveOn = false
+
+    /// 按当前设置 + 流程状态，应用两项「执行期间不被打断」的措施。
+    ///
+    ///   - **不息屏**：`UIApplication.isIdleTimerDisabled`（前台有效，阻止自动息屏）；
+    ///   - **后台保活**：静音音频循环（`Info.plist` 已声明 `UIBackgroundModes: audio`），
+    ///     锁屏 / 切后台时进程仍存活，安装可以跑完。
+    ///
+    /// 两者可同时开，也可只开一个（见「设置」）。收尾时只关自己开的那个保活：
+    /// 配对流程也用同一个 `KeepAlive`，不能把它误停。
+    private func applyRunGuards() {
+        let active = busy
+        ScreenAwake.set(active && keepScreenAwake)
+        if active && keepAliveInBackground {
+            if !KeepAlive.shared.isActive {
+                KeepAlive.shared.start()
+            }
+            runKeepAliveOn = true
+        } else if runKeepAliveOn {
+            runKeepAliveOn = false
+            if !PairingController.shared.isPairing {
+                KeepAlive.shared.stop()
+            }
         }
     }
     @Published var progress: Double = 0

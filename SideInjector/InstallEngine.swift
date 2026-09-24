@@ -91,6 +91,15 @@ enum TunnelNet {
         allIPv4().filter { isTunnelInterface($0.name) }
     }
 
+    /// WiFi 接口（en0…）及其地址；为空即表示 WiFi 未连接或没拿到地址。
+    ///
+    /// 用途：安装前把「WiFi 是否在工作」记一行日志 —— 安装链路本身**不访问外网**
+    /// （全程是本机内的 loopback VPN 隧道 → RSD → installd），所以这条日志是为了事后对照
+    /// 「关掉 WiFi 时到底还能不能装」，以及 loopback VPN 是否依赖某个网络接口。
+    static func wifiInterfaces() -> [(name: String, ip: String)] {
+        allIPv4().filter { $0.name.hasPrefix("en") }
+    }
+
     static func candidateHosts() -> [String] {
         let all = allIPv4()
         let tunnels = all.filter { isTunnelInterface($0.name) }.map(\.ip)
@@ -177,6 +186,13 @@ final class InstallEngine {
                  pairingURL: URL?,
                  onProgress: @escaping (Double, String) -> Void) async -> InstallResult {
         LogStore.shared.append("install: 走 CoreDevice/RSD 链路（127.0.0.1:49152）")
+        // 网络环境（排障时最先要对照的两项）：安装链路**不访问外网** —— 全程是本机内的
+        // loopback VPN 隧道 → RSD → AFC/installation_proxy → installd；WiFi 本身不提供通路。
+        // 这里记一行，方便事后判断「关掉 WiFi 时到底还能不能装」以及 VPN 是否依赖网络接口。
+        let wifiOn = !TunnelNet.wifiInterfaces().isEmpty
+        let vpnOn = !TunnelNet.vpnInterfaces().isEmpty
+        LogStore.shared.append("install: 网络环境：WiFi \(wifiOn ? "已连接" : "未连接")"
+                               + " · LocalDevVPN \(vpnOn ? "已连接" : "未连接")")
 
         final class InstallState { var done = false; var rc: Int32 = -1 }
         let state = InstallState()

@@ -14,6 +14,8 @@ struct ContentView: View {
     @State private var tab = 0
     @ObservedObject private var pairing = PairingController.shared
     @ObservedObject private var certs = CertStore.shared
+    /// 网络 / 隧道状态（**实时**）：顶部标题栏显示 iOS 版本 · LocalDevVPN · WiFi。
+    @ObservedObject private var net = NetworkMonitor.shared
     /// 环境自检（iOS 版本 / LocalDevVPN 状态 / 隧道端口探测）
     @State private var env = EnvSnapshot()
     @State private var envBusy = false
@@ -158,9 +160,12 @@ struct ContentView: View {
     // MARK: - 头部
 
     private var header: some View {
+        // 副标题原先是「Liquid Glass · iOS 26+」这类**外观**描述（对使用者没有信息量）。
+        // 现在放真正需要一眼看到的三项：iOS 版本 · LocalDevVPN 状态 · WiFi 状态。
+        // 实时刷新（见 NetworkMonitor）：开关 WiFi / 连接或断开 VPN 后这里会立刻变化。
         BrandHeader(icon: "syringe.fill",
                     title: "SideInjector",
-                    subtitle: UILook.isLiquidGlass ? "Liquid Glass · iOS 26+" : "毛玻璃 · iOS 17+",
+                    subtitle: net.headline,
                     animateIcon: model.busy) {
             EmptyView()
         }

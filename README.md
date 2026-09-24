@@ -74,6 +74,12 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       「导出」（分享 / 存到「文件」）、「清空」（内存 + 文件，超过 4 MB 自动轮转保留一份 `sideinjector.1.log`）。
       注：**不提供「查看全部」**——几千行文本一次性交给 `Text` 排版渲染不出来；那个入口的用途本来也只是
       「把日志拿出来」，所以直接做成复制
+- [x] **顶部状态实时显示**：标题栏副标题为 `iOS 版本 · LocalDevVPN 已连接/未连接 · WiFi 已连接/未连接`
+      （原来是「Liquid Glass · iOS 26+」这类外观描述，对使用者没有信息量）。用 `NWPathMonitor` 实时刷新，
+      开关 WiFi / 连接或断开 VPN 都会立刻反映；判据与「环境自检」一致（VPN = 存在 utun/ipsec/ppp 隧道接口）。
+      说明：**安装链路不访问外网**——全程是本机内的 loopback VPN 隧道 → RSD → AFC/installation_proxy → installd，
+      WiFi 本身不提供通路（连自己的 LAN 地址仍走本机回环，沙盒限制相同）；安装开始时也会记一行
+      `install: 网络环境：WiFi … · LocalDevVPN …`，便于事后对照
 - [x] **清理 App 缓存**：「库」页签 →「存储与缓存」显示缓存占用并可一键清理
       （只清 `tmp/` 下的工作目录与 `Caches`；证书、已签名 IPA 库、导入的 IPA / dylib、配对文件、日志都保留）
 - [x] **自动清理解包残留**：App 启动时（后台队列）自动删掉上次运行遗留的 `si_out_*`（解包工作树）、

@@ -39,8 +39,6 @@ struct LibraryView: View {
         }
         .scrollIndicators(.hidden)
         .scrollDismissesKeyboard(.immediately)   // 一滚动就收起键盘
-        // 汇报滚动状态：顶部蒙版只在内容真的滚上去之后才出现（并渐显）。
-        .siTrackScrollEdge()
         .onAppear { cacheBytes = Storage.cacheBytes() }
         .sheet(item: $editingCert) { CertEditView(cert: $0) }
         .confirmationDialog("删除该证书？", isPresented: certDeleteShown, presenting: pendingDeleteCert) { c in

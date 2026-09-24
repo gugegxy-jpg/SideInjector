@@ -109,8 +109,6 @@ struct ContentView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .scrollIndicators(.hidden)   // 不显示右侧滚动条
-        // 汇报滚动状态：顶部蒙版只在内容真的滚上去之后才出现（并渐显）。
-        .siTrackScrollEdge()
     }
 
     // MARK: - 底部页签栏

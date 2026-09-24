@@ -58,8 +58,11 @@ final class NetworkMonitor: ObservableObject {
         monitor.start(queue: DispatchQueue(label: "com.sideinjector.network-monitor"))
     }
 
-    /// 标题栏那一行：`iOS 27.0 · LocalDevVPN 已连接 · WiFi 已连接`。
-    var headline: String {
-        "iOS \(osVersion) · LocalDevVPN \(vpnUp ? "已连接" : "未连接") · \(networkText)"
+    /// 当前 iOS **主版本号**（标题栏据此着色：27 及以上算「够用」）。
+    ///
+    /// 标题行本身由 View 侧拼装（`ContentView.statusLine`）—— 因为要按项着色，
+    /// 一个纯 String 表达不了，所以这里只提供判断所需的原始值。
+    var osMajorVersion: Int {
+        Int(osVersion.split(separator: ".").first ?? "") ?? 0
     }
 }

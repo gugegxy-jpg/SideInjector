@@ -176,17 +176,44 @@ struct ContentView: View {
 
     private var header: some View {
         // 副标题原先是「Liquid Glass · iOS 26+」这类**外观**描述（对使用者没有信息量）。
-        // 现在放真正需要一眼看到的三项：iOS 版本 · LocalDevVPN 状态 · WiFi 状态。
+        // 现在放真正需要一眼看到的三项：iOS 版本、LocalDevVPN、WiFi —— 见 `statusLine`
+        // （按状态着色，不写「已连接 / 未连接」，颜色本身就是状态）。
         // 实时刷新（见 NetworkMonitor）：开关 WiFi / 连接或断开 VPN 后这里会立刻变化。
         // 字形用**当前 App 图标**（`Assets.xcassets/AppLogo`，与 AppIcon 同一张图，
         // 由 `AppIcon.appiconset/icon-1024.png` 缩放而来）。
         BrandHeader(icon: "syringe.fill",
                     iconImage: "AppLogo",
                     title: "SideInjector",
-                    subtitle: net.headline,
                     animateIcon: model.busy) {
-            EmptyView()
+            statusLine
         }
+    }
+
+    /// 标题下方那一行：`iOS 版本 · LocalDevVPN · WiFi`，按状态着色。
+    ///
+    ///   - iOS **27 及以上** → 绿色；27 以下 → 黄色（提示版本偏低）；
+    ///   - LocalDevVPN / WiFi **已连接** → 绿色；未连接 → 红色。
+    ///
+    /// **不写「已连接 / 未连接」**：颜色本身就是状态，文字只会变成噪音。
+    /// 无障碍标签里仍然读全（读屏用户看不到颜色）。
+    private var statusLine: some View {
+        HStack(spacing: 6) {
+            Text("iOS \(net.osVersion)")
+                .foregroundStyle(net.osMajorVersion >= 27 ? Theme.stateOK : Theme.stateWarn)
+            Text("·").foregroundStyle(.secondary.opacity(0.55))
+            Text("LocalDevVPN")
+                .foregroundStyle(net.vpnUp ? Theme.stateOK : Theme.stateBad)
+            Text("·").foregroundStyle(.secondary.opacity(0.55))
+            Text("WiFi")
+                .foregroundStyle(net.wifiUp ? Theme.stateOK : Theme.stateBad)
+        }
+        .font(.subheadline.weight(.semibold))
+        // 状态一变颜色平滑过渡，而不是硬切。
+        .animation(.smooth(duration: 0.25), value: net.vpnUp)
+        .animation(.smooth(duration: 0.25), value: net.wifiUp)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("iOS \(net.osVersion)，LocalDevVPN \(net.vpnUp ? "已连接" : "未连接")，"
+                            + "WiFi \(net.wifiUp ? "已连接" : "未连接")（\(net.networkText)）")
     }
 
     // MARK: - 开发证书

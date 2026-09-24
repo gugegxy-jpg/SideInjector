@@ -15,6 +15,19 @@ enum Theme {
     /// 头部图标后的深蓝晕（对应图标美术 #011A5C）。
     static let glow = Color(red: 1 / 255, green: 26 / 255, blue: 92 / 255)
 
+    // MARK: - 状态色
+    //
+    // 取"柔化"的值而不是系统饱和色（systemGreen / systemRed）：这些是 `subheadline` 小字，
+    // 直接压在深色玻璃背景上，饱和色会显得刺眼、像报错；柔一点才像 SideInstaller 那种克制的
+    // 状态标记（有颜色、但不抢视线）。
+
+    /// 状态正常：iOS 版本达标 / 已连接。
+    static let stateOK = Color(red: 0.36, green: 0.85, blue: 0.55)
+    /// 需要留意：iOS 版本偏低。
+    static let stateWarn = Color(red: 1.0, green: 0.76, blue: 0.33)
+    /// 不可用：未连接。
+    static let stateBad = Color(red: 1.0, green: 0.45, blue: 0.45)
+
     /// 标志性的斜向渐变，用于 logo、主操作按钮与强调。
     static var brand: LinearGradient {
         LinearGradient(colors: [accent, accent2],

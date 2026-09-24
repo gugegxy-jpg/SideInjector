@@ -29,9 +29,10 @@ struct LibraryView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
-                certSection
-                ipaSection
-                storageSection
+                // 与首页一致：切到本页签时各块按序「浮动出现」（见 `Theme.cascadeItem`）。
+                certSection.cascadeItem(0)
+                ipaSection.cascadeItem(1)
+                storageSection.cascadeItem(2)
             }
             .padding(20)
             .padding(.bottom, 12)

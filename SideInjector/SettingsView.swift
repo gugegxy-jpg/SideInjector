@@ -34,6 +34,8 @@ struct SettingsView: View {
                     Text("与执行流程相关的开关").font(.subheadline).foregroundStyle(.secondary)
                 }
                 .padding(.top, 8)
+                // 与首页一致：切到本页签时各块按序「浮动出现」（见 `Theme.cascadeItem`）。
+                .cascadeItem(0)
 
                 PanelCard {
                     VStack(alignment: .leading, spacing: 12) {
@@ -65,6 +67,7 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                .cascadeItem(1)
 
                 // 关于：头像 + 作者名称（整行可点，跳仓库）。
                 PanelCard {
@@ -92,6 +95,7 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
+                .cascadeItem(2)
             }
             .padding(20)
             .padding(.bottom, 12)

@@ -89,8 +89,10 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       **常驻铺着、但平时看不出来**：只模糊、不叠色 —— 用 UIKit 纯模糊 `UIBlurEffect(style: .regular)`
       （`BlurOnly` + `UIViewRepresentable`）。模糊一层平滑渐变 ≈ 原来的渐变，所以空着时看不见；
       内容滑到它下面立刻呈现毛玻璃感。**刻意不用** `.ultraThinMaterial` / `.glassEffect`：它们除模糊外
-      还叠一层填充色（玻璃还带高光），在深色渐变背景上会浮出一条能看出来的"带子"。底边 14pt 渐隐，
-      连边界一起消掉；高度 = `safeAreaInsets.top + 14`，整层 `allowsHitTesting(false)`（不吃点击），
+      还叠一层填充色（玻璃还带高光），在深色渐变背景上会浮出一条能看出来的"带子"。**强度也不能整条一样**：
+      模糊会轻微去色，等强时边界仍看得出来，所以强度做成自上而下的渐变 —— 顶端约 0.7（系统状态栏文字
+      所在处，必须压住），往下递减到 0，越往下越淡直到与背景无差；想更淡/更明显就调 `StatusBarMask`
+      里 mask 那几个 opacity。高度 = `safeAreaInsets.top + 14`，整层 `allowsHitTesting(false)`（不吃点击），
       两个页签都受保护。曾试过两条岔路，都撤了：① 「iOS 26+ 交给系统的 scroll edge effect」——
       本 App 无导航栏 / `safeAreaBar`，系统那层**实测不出现**（iOS 27 状态栏完全透明）；
       ② 「按滚动状态显隐」—— 既然平时看不出来，那套状态判断只会带来闪烁风险

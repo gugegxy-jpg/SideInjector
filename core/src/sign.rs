@@ -57,6 +57,17 @@ pub fn sign_bundle(
     }
     diagnose_bundle(app);
 
+    // 扩展 Bundle ID 前缀自愈（**无条件**做，见 crate::bundle::normalize_extension_ids 的说明）：
+    // 第三方改版 IPA 常出现「主 App 的 bundle id 被改过、嵌套扩展没跟着改」，这种包用户什么都
+    // 不改、原样签名也会被 installd 以 `Mismatched bundle IDs` 拒绝（实测：637 MB 上传完才被拒）。
+    let healed = crate::bundle::normalize_extension_ids(app);
+    if healed > 0 {
+        log_msg(&format!(
+            "扩展前缀自愈：{healed} 个扩展的 Bundle ID 已改写为以主 App（{}）为前缀（否则 installd 会拒绝安装）",
+            bundle_id_of(app).unwrap_or_else(|| "(未知)".to_string())
+        ));
+    }
+
     let p12_data = fs::read(p12).with_context(|| format!("读取 P12 证书失败：{p12}"))?;
     let prov_data = fs::read(prov).with_context(|| format!("读取描述文件失败：{prov}"))?;
 
@@ -353,7 +364,10 @@ fn verify_signed_identifiers(app: &Path) {
             let Some(plist) = info_plist_of(&item) else {
                 continue;
             };
-            let Ok(v) = plist::Value::from_file(&plist) else {
+            let Ok(plist_data) = fs::read(&plist) else {
+                continue;
+            };
+            let Ok(v) = plist::from_bytes::<plist::Value>(&plist_data) else {
                 continue;
             };
             let Some(d) = v.as_dictionary() else {

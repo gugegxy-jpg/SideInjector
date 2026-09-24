@@ -4,13 +4,13 @@ import SwiftUI
 ///
 /// 两块内容：
 ///   1. 「执行期间不被打断」的两个开关（息屏 / 后台保活）；
-///   2. 「关于」：作者 + 仓库入口（点击跳 GitHub）。
+///   2. 「关于」：作者头像 + 名字（整行可点，跳 GitHub 仓库）+ 版本号。
 struct SettingsView: View {
     @ObservedObject private var model = Model.shared
 
-    /// 仓库地址（「关于」里点击跳转用）。
+    /// 仓库地址（点「作者」那一行时跳转）。
     private static let repoURL = URL(string: "https://github.com/gugegxy-jpg/SideInjector")!
-    /// 版本号（`CFBundleShortVersionString`（build））。
+    /// 版本的展示串：`CFBundleShortVersionString（CFBundleVersion）`。
     private static var appVersion: String {
         let info = Bundle.main.infoDictionary
         let short = info?["CFBundleShortVersionString"] as? String ?? "-"
@@ -62,7 +62,7 @@ struct SettingsView: View {
                     }
                 }
 
-                // 关于 / 作者：整行可点，跳 GitHub 仓库。
+                // 关于：只放头像 + 作者名（整行可点，跳仓库）。
                 PanelCard {
                     VStack(alignment: .leading, spacing: 12) {
                         Label {
@@ -71,17 +71,9 @@ struct SettingsView: View {
                             Image(systemName: "person.crop.circle").foregroundStyle(Theme.brand)
                         }
                         Link(destination: Self.repoURL) {
-                            HStack(spacing: 10) {
-                                Image(systemName: "curlybraces")
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundStyle(Theme.accent)
-                                    .frame(width: 30, height: 30)
-                                    .background(Circle().fill(Theme.accent.opacity(0.14)))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text("作者：gugegxy-jpg").font(.subheadline.weight(.semibold))
-                                    Text("github.com/gugegxy-jpg/SideInjector")
-                                        .font(.caption2).foregroundStyle(.secondary)
-                                }
+                            HStack(spacing: 12) {
+                                AuthorAvatar()
+                                Text("gugegxy-jpg").font(.subheadline.weight(.semibold))
                                 Spacer(minLength: 6)
                                 Image(systemName: "arrow.up.right.square")
                                     .font(.system(size: 15, weight: .semibold))
@@ -90,9 +82,7 @@ struct SettingsView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        Text("版本 \(Self.appVersion)　·　参考 SideInstaller by FrizzleM、"
-                             + "apple-codesign（MPL-2.0）与 idevice（MIT）；"
-                             + "完整第三方声明见仓库根目录 THIRD_PARTY_NOTICES.md")
+                        Text("版本 \(Self.appVersion)　·　第三方声明见 THIRD_PARTY_NOTICES.md")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -102,5 +92,34 @@ struct SettingsView: View {
             .padding(.bottom, 12)
         }
         .scrollIndicators(.hidden)
+    }
+}
+
+/// 作者头像。
+///
+/// 从 GitHub 的头像地址取（`https://github.com/<用户名>.png`，支持 `?size=` 指定尺寸）——
+/// 好处是不用把图片打进包里，而且对方换头像后这里会跟着变。
+/// 加载中 / 离线 / 失败时显示同尺寸的占位圆圈（首字母），布局不会跳动。
+private struct AuthorAvatar: View {
+    private static let url = URL(string: "https://github.com/gugegxy-jpg.png?size=200")
+
+    var body: some View {
+        AsyncImage(url: Self.url) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            default:
+                ZStack {
+                    Circle().fill(Theme.accent.opacity(0.14))
+                    Text("G")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                }
+            }
+        }
+        .frame(width: 40, height: 40)
+        .clipShape(Circle())
+        .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+        .accessibilityLabel("作者头像")
     }
 }

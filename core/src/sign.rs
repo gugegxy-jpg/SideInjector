@@ -337,6 +337,50 @@ fn verify_signed_identifiers(app: &Path) {
         }
     }
 
+    // 扩展前缀自检：iOS 在安装期（IXPlaceholder）还要求「扩展的 bundle id 以父 App 的
+    // bundle id 为前缀」，否则报 `Mismatched bundle IDs`（APIInternalError）。这条规则与上面
+    // 「签名标识 == bundle id」**相互独立** —— 各自都满足、组合起来仍可能被拒。
+    // 实测：主 App 改成 com.douyin.xyz，而 PlugIns/DYShareExtension.appex 仍是
+    // com.ss.iphone.ugc.Aweme.DYShareExtension → 637 MB 上传完才被 installd 拒绝，所以单独查一遍。
+    if let Some(main_id) = bundle_id_of(app) {
+        let prefix = format!("{main_id}.");
+        let mut ext_checked = 0usize;
+        let mut ext_bad = 0usize;
+        for item in collect_signable_nested(app) {
+            if !item.is_dir() {
+                continue;
+            }
+            let Some(plist) = info_plist_of(&item) else {
+                continue;
+            };
+            let Ok(v) = plist::Value::from_file(&plist) else {
+                continue;
+            };
+            let Some(d) = v.as_dictionary() else {
+                continue;
+            };
+            // 只判定真正的扩展 / Watch App：framework 与资源 bundle 的标识独立，前缀规则不适用。
+            if d.get("NSExtension").is_none() && d.get("WKWatchKitApp").is_none() {
+                continue;
+            }
+            ext_checked += 1;
+            let id = d
+                .get("CFBundleIdentifier")
+                .and_then(|x| x.as_string())
+                .unwrap_or("");
+            if !id.starts_with(&prefix) {
+                ext_bad += 1;
+                log_msg(&format!(
+                    "⚠️ 扩展前缀自检：{id} 不以父 App 的 bundle id（{main_id}）为前缀 —— \
+                     installd 会以 Mismatched bundle IDs 拒绝安装"
+                ));
+            }
+        }
+        log_msg(&format!(
+            "扩展前缀自检：检查 {ext_checked} 个扩展，前缀不符 {ext_bad} 个（0 表示满足 iOS 的前缀要求）"
+        ));
+    }
+
     log_msg(&format!(
         "签名标识自检：检查 {checked} 项，不匹配 {bad} 项（0 表示每个代码项的签名标识都等于它的 bundle id）"
     ));

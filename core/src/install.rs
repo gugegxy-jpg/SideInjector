@@ -140,6 +140,22 @@ fn explain_install_error(raw: &str) -> Option<String> {
                 .to_string(),
         );
     }
+    if raw.contains("app extension placeholder") || raw.contains("Mismatched bundle IDs") {
+        let ext_id = between(raw, "with bundle ID ", " that does not match")
+            .unwrap_or_else(|| "(未知)".into());
+        let parent_id =
+            between(raw, "required prefix of ", " for parent").unwrap_or_else(|| "(未知)".into());
+        return Some(format!(
+            "══ 安装被 iOS 拒绝：扩展的 Bundle ID 与父 App 不匹配 ══\n\
+             扩展：  {ext_id}\n\
+             父 App：{parent_id}\n\
+             原因：iOS 要求**扩展（.appex）的 Bundle ID 必须以父 App 的 Bundle ID 为前缀**。\n\
+             　　 通常是「改了主 App 的 Bundle ID、但没同步改嵌套扩展」造成的。\n\
+             处理：本工具改 Bundle ID 时会自动同步全部扩展（日志里 `嵌套扩展 Bundle ID：PlugIns/…：旧 → 新`）。\n\
+             　　 重新执行一次「改 Bundle ID → 注入 → 签名」流程即可；签名结尾还有\n\
+             　　 `扩展前缀自检：检查 N 个扩展，前缀不符 M 个` 可供核对。"
+        ));
+    }
     None
 }
 
@@ -272,10 +288,25 @@ async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
     }
 
     if errors.is_empty() {
+        // 把「为什么没有通路」说到位：区分「loopback VPN 没在工作」与「VPN 在工作、但端点不对」。
+        //
+        // 判据（实测，见 README）：127.0.0.1:49152 是**假阳性** —— loopback VPN 的本地监听会接受
+        // 连接，但一发 RSD 升级请求就被 RST（曾观察到：它「TCP 可连接」，紧接着 `Connection reset
+        // by peer`；真正干活的是 VPN 对端 10.7.0.1）。所以「除 127.0.0.1 之外全不可达」就等于
+        // VPN 没在工作，而不是端口/服务的问题。
+        let vpn_reachable = rp_hosts.iter().any(|h| !h.is_loopback());
+        let reason = if vpn_reachable {
+            "候选地址能建立 TCP，但没有一个是明文 RSD，lockdownd(62078) 也都无应答"
+        } else {
+            "loopback VPN（StosVPN / SideStore 的描述文件）看起来**没有在工作**：\
+             端口探测里只有 127.0.0.1:49152 连得上 —— 那是 VPN 本地监听的假阳性\
+             （发 RSD 升级请求必被 RST），而 10.7.0.1 / 10.7.0.2 全部超时"
+        };
         bail!(
-            "没有找到可用的安装通路：49152 上不是明文 RSD，且候选地址的 lockdownd(62078) 都无应答。\n\
-             请确认 loopback VPN（StosVPN / SideStore 的描述文件）已开启并保持连接，\
-             并提供配对文件（首页「输入」→ 配对文件）。把 install: 开头的日志发出来可精确定位。"
+            "没有找到可用的安装通路：{reason}。\n\
+             处理：打开 StosVPN（或 SideStore 配套的 loopback VPN 描述文件）并让它保持连接后重试；\n\
+             连上之后，本日志里会出现 `端口探测 10.7.0.1:49152 TCP 可连接`。\n\
+             另：免电脑通路需要配对文件（首页「输入」→ 配对文件）。把 install: 开头的日志发出来可精确定位。"
         );
     }
     bail!("两条通路都失败：\n - {}", errors.join("\n - "));

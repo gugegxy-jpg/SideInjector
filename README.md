@@ -218,6 +218,8 @@ project.yml                XcodeGen 规格
 | 点「执行」没反应 | 现在都会**弹窗**说明原因；首页日志里也有 `输入检查：…` 行指出是哪个文件不可用 |
 | 覆盖安装后证书「丢了」 | 已在「库」页签点该证书的「编辑」，重选 P12 与描述文件保存即可（本版已做路径自愈，正常情况下会自动找回） |
 | 安装失败 | 先看**环境自检**卡片：确认 49152 可连接、开发者模式已开；再看日志里的 `install error: …` |
+| 日志里只有 `127.0.0.1:49152` 可连接、`10.7.0.1:49152` **超时** | **loopback VPN 没在工作**（StosVPN / SideStore 的描述文件没连上、被系统断开，或那个进程被系统回收）。注意 `127.0.0.1` 的「TCP 可连接」是**假阳性**：本地监听会接受连接，但一发 RSD 升级请求就被 RST。处理：打开 StosVPN 并保持连接，直到日志里出现 `端口探测 10.7.0.1:49152 TCP 可连接`，再重试安装 |
+| 安装报 `APIInternalError` / `Mismatched bundle IDs` / `does not match required prefix of … for parent` | **嵌套扩展（.appex）的 Bundle ID 与父 App 不匹配**。iOS 要求扩展的 Bundle ID **必须以父 App 的 Bundle ID 为前缀**，改主 App 的 Bundle ID 时必须连带改扩展。本工具会自动同步（日志里 `嵌套扩展 Bundle ID：PlugIns/…：旧 → 新`），签名结尾另有 `扩展前缀自检：检查 N 个扩展，前缀不符 M 个` 可核对 |
 | 签名报 `I/O error: No such file or directory (os error 2)` | 这个错误**不带路径**（`apple-bundles` 的老问题）。请复制日志里这几类行：`重签（主可执行）：…`、`重签（资源/二进制）：…`、`重签失败（保留原签名）：…`、`深签（自实现）：完成 X，失败 Y`、以及报错前的 `[apple_…]` 行 |
 | 安装报 `MismatchedBundleIDSigningIdentifier` | 某个嵌套代码的**签名标识 ≠ 它的 bundle id**。看日志里 `重签（主可执行）：xxx（CFBundleIdentifier=…）` 一行标了 `**缺失**` 就说明该 bundle 的 Info.plist 没有 `CFBundleIdentifier`，标识无法修正 |
 | 安装报 `MismatchedApplicationIdentifierEntitlement`（跨 App ID 覆盖升级） | **不是签名问题**。设备上已装同 Bundle ID 的 App，但那个 App 的 `application-identifier`（即 App ID，形如 `TEAM.com.xxx`）与新包的**不是同一个**——iOS 不允许换证书「覆盖升级」。最常见场景：设备上装的是 **App Store 正版**同名 App。处理：**先在设备上卸载那个 App，再安装**（卸载会清掉它的数据）；或改用与它同一张证书签名。日志里已把它翻译成中文并给出两个 App ID，看结尾的 `install error:` 即可 |

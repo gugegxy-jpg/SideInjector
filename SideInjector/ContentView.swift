@@ -178,7 +178,10 @@ struct ContentView: View {
         // 副标题原先是「Liquid Glass · iOS 26+」这类**外观**描述（对使用者没有信息量）。
         // 现在放真正需要一眼看到的三项：iOS 版本 · LocalDevVPN 状态 · WiFi 状态。
         // 实时刷新（见 NetworkMonitor）：开关 WiFi / 连接或断开 VPN 后这里会立刻变化。
+        // 字形用**当前 App 图标**（`Assets.xcassets/AppLogo`，与 AppIcon 同一张图，
+        // 由 `AppIcon.appiconset/icon-1024.png` 缩放而来）。
         BrandHeader(icon: "syringe.fill",
+                    iconImage: "AppLogo",
                     title: "SideInjector",
                     subtitle: net.headline,
                     animateIcon: model.busy) {

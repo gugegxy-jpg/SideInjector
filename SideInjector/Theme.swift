@@ -235,22 +235,44 @@ struct StatusPill: View {
 /// 每屏顶部的英雄区：字形、标题与配件。
 struct BrandHeader<Accessory: View>: View {
     var icon: String
+    /// 传了就优先用这张**资源图片**当字形（用于显示 App 图标）；`icon` 保留作兜底。
+    var iconImage: String? = nil
     var title: String
     var subtitle: String? = nil
     var animateIcon: Bool = false
     @ViewBuilder var accessory: () -> Accessory
 
     var body: some View {
+        // 图标边缘渐隐的宽度 / 羽化半径。
+        let edgeFade: CGFloat = 6
         VStack(spacing: 14) {
             ZStack {
-                RoundedRectangle(cornerRadius: 23, style: .continuous)
-                    .fill(Theme.brand)
-                    .frame(width: 86, height: 86)
-                    .shadow(color: Theme.glow, radius: 20, x: 0, y: 12)
-                Image(systemName: icon)
-                    .font(.system(size: 40, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .symbolEffect(.pulse, isActive: animateIcon)
+                if let iconImage {
+                    // App 图标是满幅正方形（不带圆角，见 AppIcon.appiconset），这里裁成圆角方形，
+                    // 并把**边缘渐隐**：形状内缩后羽化，图标外缘 alpha 渐降到 0、融进背景，
+                    // 不会留下一圈硬边（看起来像贴了个方块）。
+                    // 这个分支不再画品牌色底板 —— 否则渐隐处会透出一圈品牌色描边，反而更显眼。
+                    Image(iconImage)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 86, height: 86)
+                        .mask {
+                            RoundedRectangle(cornerRadius: 23, style: .continuous)
+                                .fill(.black)
+                                .padding(edgeFade)
+                                .blur(radius: edgeFade)
+                        }
+                        .shadow(color: Theme.glow, radius: 20, x: 0, y: 12)
+                } else {
+                    RoundedRectangle(cornerRadius: 23, style: .continuous)
+                        .fill(Theme.brand)
+                        .frame(width: 86, height: 86)
+                        .shadow(color: Theme.glow, radius: 20, x: 0, y: 12)
+                    Image(systemName: icon)
+                        .font(.system(size: 40, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .symbolEffect(.pulse, isActive: animateIcon)
+                }
             }
             .scaleEffect(animateIcon ? 1.04 : 1)
             .animation(animateIcon ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true) : .default,

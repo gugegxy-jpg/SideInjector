@@ -174,7 +174,8 @@ final class Model: ObservableObject {
         }
     }
 
-    /// 执行期间后台音频保活：**锁屏 / 切后台也能继续安装**（默认关；会全程持有一个静音音频会话）。
+    /// 执行期间后台音频保活：**切后台也能继续安装**（默认关；会全程持有一个静音音频会话）。
+    /// **不支持锁屏** —— 锁屏后进程会被系统挂起，流程会断。
     @Published var keepAliveInBackground: Bool = UserDefaults.standard.bool(forKey: "keepAliveInBackground") {
         didSet {
             UserDefaults.standard.set(keepAliveInBackground, forKey: "keepAliveInBackground")
@@ -189,7 +190,7 @@ final class Model: ObservableObject {
     ///
     ///   - **不息屏**：`UIApplication.isIdleTimerDisabled`（前台有效，阻止自动息屏）；
     ///   - **后台保活**：静音音频循环（`Info.plist` 已声明 `UIBackgroundModes: audio`），
-    ///     锁屏 / 切后台时进程仍存活，安装可以跑完。
+    ///     **切后台**时进程仍存活，安装可以跑完；锁屏不在覆盖范围内（锁屏即被挂起）。
     ///
     /// 两者可同时开，也可只开一个（见「设置」）。收尾时只关自己开的那个保活：
     /// 配对流程也用同一个 `KeepAlive`，不能把它误停。

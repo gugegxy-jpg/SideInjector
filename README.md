@@ -102,7 +102,8 @@ sideinjector-core (Rust, 编成 xcframework / staticlib)
       ⑤ 配对卡片的「本地网络授权探测」在离开卡片 / 探测失败后立即取消 Bonjour 浏览（不再常驻 mDNS 唤醒网卡）
 - [x] **设置页**（底部第三个页签，位于「库」右侧）：两个「执行期间不被打断」开关 ——
       **不息屏**（系统标准 `isIdleTimerDisabled`，前台有效、不需权限）与
-      **后台保活**（静音音频 + `UIBackgroundModes: audio`，**锁屏 / 切后台进程仍存活、安装能跑完**；
+      **后台保活**（静音音频 + `UIBackgroundModes: audio`，**切后台时进程仍存活、安装能跑完**；
+      **不支持锁屏** —— 锁屏后进程会被系统挂起、流程会断，需长时间无人值守请改用「不息屏」；
       代价是更耗电并占用音频通道）。两者可同时开，选择持久化到 `UserDefaults`；
       由 `Model.outcome` 统一驱动（`applyRunGuards`）：流程开始 / 继续自动开启，完成 / 失败 / 取消自动恢复，
       且只关自己开的那一个保活（配对流程也用同一个 `KeepAlive`，不会误停）。

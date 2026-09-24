@@ -55,9 +55,11 @@ struct SettingsView: View {
                         }
                         Toggle(isOn: $model.keepAliveInBackground) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("执行期间后台保活（可锁屏 / 切后台）").font(.subheadline.weight(.semibold))
-                                Text("循环播放一段静音音频（`UIBackgroundModes: audio`），锁屏 / 切后台时进程仍存活，"
-                                     + "安装能继续跑完。代价是全程持有一个音频会话 —— 更耗电，也会占用音频通道。")
+                                Text("执行期间后台保活（切后台）").font(.subheadline.weight(.semibold))
+                                Text("循环播放一段静音音频（`UIBackgroundModes: audio`），切后台时进程仍存活，"
+                                     + "安装能继续跑完。不支持锁屏 —— 锁屏后进程会被系统挂起、流程会断，"
+                                     + "需要长时间无人值守请改用上面的「不息屏」。"
+                                     + "代价是全程持有一个音频会话 —— 更耗电，也会占用音频通道。")
                                     .font(.caption2).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }

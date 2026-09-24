@@ -197,17 +197,22 @@ struct ContentView: View {
     /// **不写「已连接 / 未连接」**：颜色本身就是状态，文字只会变成噪音。
     /// 无障碍标签里仍然读全（读屏用户看不到颜色）。
     private var statusLine: some View {
-        HStack(spacing: 6) {
-            Text("iOS \(net.osVersion)")
-                .foregroundStyle(net.osMajorVersion >= 27 ? Theme.stateOK : Theme.stateWarn)
-            Text("·").foregroundStyle(.secondary.opacity(0.55))
-            Text("LocalDevVPN")
-                .foregroundStyle(net.vpnUp ? Theme.stateOK : Theme.stateBad)
-            Text("·").foregroundStyle(.secondary.opacity(0.55))
-            Text("WiFi")
-                .foregroundStyle(net.wifiUp ? Theme.stateOK : Theme.stateBad)
+        HStack(spacing: 8) {
+            // 胶囊底板用全局的 `StatusPill`（与其它状态芯片同一套外观）：
+            // 图标 + 着色文字 + 同色淡底 —— 颜色仍是唯一的状态信号。
+            StatusPill(text: "iOS \(net.osVersion)",
+                       systemImage: "iphone",
+                       color: net.osMajorVersion >= 27 ? Theme.stateOK : Theme.stateWarn)
+            StatusPill(text: "LocalDevVPN",
+                       systemImage: "lock.shield.fill",
+                       color: net.vpnUp ? Theme.stateOK : Theme.stateBad)
+            StatusPill(text: "WiFi",
+                       systemImage: "wifi",
+                       color: net.wifiUp ? Theme.stateOK : Theme.stateBad)
         }
-        .font(.subheadline.weight(.semibold))
+        // 窄屏 / 大字号下不换行、不溢出。
+        .lineLimit(1)
+        .minimumScaleFactor(0.85)
         // 状态一变颜色平滑过渡，而不是硬切。
         .animation(.smooth(duration: 0.25), value: net.vpnUp)
         .animation(.smooth(duration: 0.25), value: net.wifiUp)

@@ -10,15 +10,13 @@
 
 
 **支持的系统：iOS 17.0 及以上。** 本工具**自身**必须运行在 iOS 17 及以上：设备端安装走的是
-iOS 17 才引入的 **CoreDevice / RSD（49152）** 链路。iOS 17 以下没有这条链路，只能走经典
-lockdownd(62078) 通路，而那条路**未经实机验证**，因此**不支持 iOS 16 及以下**——低于 iOS 17 的设备
-装不上本 App，`project.yml` 的部署目标也是 `17.0`。
+iOS 17 才引入的 **CoreDevice / RSD（49152）** 链路。
 
 ---
 
 ## 快速开始（使用）
 
-1. **装 SideInjector 本身**（必须侧载，不能上 App Store）。CI 产出的未签名 IPA 用 SideStore / AltStore / Sideloadly 等装上即可。
+1. **装 SideInjector 本身**（必须侧载）。CI 产出的未签名 IPA 用 SideStore / AltStore / Sideloadly 等装上即可。
 2. 打开 App → 首页 **证书** 区 → 「导入」选择你的 `.p12` + `.mobileprovision` + p12 密码（可保存多套，之后下拉直选）。
 3. 首页 **输入** 区 → 「导入」选择要处理的 `.ipa`（导入即入库，之后可在下拉里重复选择）；需要注入的 `.dylib` 同样导入（可多选）。
 4. 需要改 Bundle ID / 显示名时可填。

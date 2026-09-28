@@ -872,10 +872,13 @@ final class Model: ObservableObject {
             self.outcome = .paused
             self.pauseReason = reason
             self.status = reason
-            // 弹窗 + 日志各记一份：失败只躺在提示条里的话，用户常常没注意到。
+            // 弹窗标题要说清**是什么问题**（"第 7 步未完成"等于没说）；
+            // 正文在原始原因之外，补上环境相关的处置（例如 WiFi 是关着的）。
             let place = self.failurePlace(step)
-            self.failure = RunFailure(title: "\(place)未完成", message: reason)
-            LogStore.shared.append("流程未完成（\(place)）：\(reason)")
+            let title = Self.failureTitle(reason: reason, fallback: "\(place)未完成")
+            let message = Self.failureAdvice(reason: reason).map { reason + "\n\n" + $0 } ?? reason
+            self.failure = RunFailure(title: title, message: message)
+            LogStore.shared.append("流程未完成（\(place)：\(title)）：\(reason)")
         }
     }
 
@@ -885,27 +888,91 @@ final class Model: ObservableObject {
         return "第 \(step + 1) 步「\(stages[step])」"
     }
 
+    /// 从失败原因里提炼出**具体问题**，当弹窗标题。
+    ///
+    /// 为什么需要：只写「第 N 步未完成」等于没说 —— 用户要知道的是"到底哪儿不对、去修什么"。
+    /// 这里覆盖实测最常见的几类（文案与 Rust 侧 `explain_install_error` / 各步骤的 reason 对应）；
+    /// 匹配不到就用兜底标题，**不臆测**。
+    private static func failureTitle(reason: String, fallback: String) -> String {
+        func has(_ s: String) -> Bool { reason.contains(s) }
+
+        // —— 安装侧（Rust 的中文诊断）——
+        if has("MismatchedApplicationIdentifierEntitlement") || has("跨 App ID 覆盖升级") {
+            return "设备上已存在相同的 App（另一张证书签的），iOS 拒绝覆盖升级"
+        }
+        if has("Mismatched bundle IDs") || has("required prefix of") {
+            return "扩展的 Bundle ID 与父 App 不匹配"
+        }
+        if has("MismatchedBundleIDSigningIdentifier") {
+            return "签名标识与 Bundle ID 不一致"
+        }
+        if has("ApplicationVerificationFailed") || has("InvalidSignature") {
+            return "签名校验失败（证书 / 描述文件与设备不匹配）"
+        }
+        if has("IXErrorDomain") || has("APIInternalError") {
+            return "iOS 拒绝了这次安装"
+        }
+        if has("49152 上没有任何服务在监听") || has("没有找到可用的安装通路") {
+            return "LocalDevVPN 没在工作（安装通路不可用）"
+        }
+        if has("未提供配对文件") { return "缺少配对文件" }
+        if has("尚未配对") { return "尚未完成设备配对" }
+
+        // —— 流程侧（各步骤的 reason）——
+        if has("解压 IPA 失败") { return "IPA 无法解压（可能损坏或非标准格式）" }
+        if has("注入") && has("失败") { return "dylib 注入失败（多半是这个 IPA 未砸壳）" }
+        if has("未在 Payload 中找到 .app") { return "IPA 里没有 .app 主程序" }
+        if has("证书文件不可用") { return "证书文件不可用（请到「库」重新选择 P12 / 描述文件）" }
+        if has("修改 Bundle 信息失败") { return "修改 Bundle ID / 显示名失败" }
+        if has("同步嵌套扩展 Bundle ID 失败") { return "同步嵌套扩展 Bundle ID 失败" }
+        if has("打包") && has("失败") { return "打包 IPA 失败" }
+
+        return fallback
+    }
+
+    /// 正文里补充的处置建议（原始原因里没有、但排障时需要的那一句）。
+    ///
+    /// 只写**当前实际状态**能证实的东西（例如标题栏的 LocalDevVPN 现在确实是红的），不猜。
+    private static func failureAdvice(reason: String) -> String? {
+        let net = NetworkMonitor.shared
+        // 只在这类"通路问题"上补环境建议（其它失败与 VPN / WiFi 无关，别加噪音）。
+        let aboutPath = reason.contains("通路") || reason.contains("LocalDevVPN")
+            || reason.contains("49152")
+        var tips: [String] = []
+        if aboutPath, !net.vpnUp {
+            tips.append("· LocalDevVPN 现在**没连上**（标题栏是红的）—— 安装必须靠它："
+                        + "打开并保持连接后，点提示条上的「继续」即可，不用重跑。")
+        }
+        if aboutPath, !net.wifiUp {
+            tips.append("· 当前 **WiFi 是关着的**：loopback VPN 需要一个可用的网络接口，"
+                        + "建议先打开 WiFi 再试。")
+        }
+        guard !tips.isEmpty else { return nil }
+        return "补充：\n" + tips.joined(separator: "\n")
+    }
+
     /// 一次「流程未完成」的提示（给弹窗用）。
     ///
     /// 为什么要有这个类型：失败原来只体现在进度卡片的提示条与日志上，用户很容易没注意到；
     /// 所有执行期失败都汇聚到 `pause(at:reason:)`，由它记一条，界面统一弹窗。
+    /// 标题是**具体问题**（不是"第几步没做完"），正文是中文原因 + 处置建议。
     struct RunFailure: Identifiable, Equatable {
         let id = UUID()
-        /// 例：`第 7 步「安装到设备」未完成`
+        /// 例：`设备上已存在相同的 App（另一张证书签的），iOS 拒绝覆盖升级`
         let title: String
         /// 中文原因（可能多行）。
         let message: String
 
-        /// 弹窗正文用的精简版：安装失败的说明有十几行，弹窗里塞不下 —— 只截前若干行，
-        /// 其余指到日志卡片（那里有完整内容与「复制」）。
+        /// 弹窗正文用的精简版：安装失败的完整说明有十几行，而 alert 不能滚动。
+        /// **首尾都要留** —— 头部是结论（两个 App ID 之类），尾部是处理办法，中间才是可省的细节。
         var alertText: String {
             let lines = message.split(separator: "\n", omittingEmptySubsequences: false)
-            let keep = 7
-            var out = lines.prefix(keep).joined(separator: "\n")
-            if lines.count > keep {
-                out += "\n…（完整说明见「日志」卡片，可点其中的「复制」）"
-            }
-            return out
+            let head = 4
+            let tail = 5
+            guard lines.count > head + tail else { return message }
+            return lines.prefix(head).joined(separator: "\n")
+                + "\n…（中间省略 \(lines.count - head - tail) 行，完整内容见「日志」卡片）\n"
+                + lines.suffix(tail).joined(separator: "\n")
         }
     }
     private func finishSuccess(_ message: String = "已完成：安装成功") {

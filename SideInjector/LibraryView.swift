@@ -68,7 +68,7 @@ struct LibraryView: View {
             }
             Button("取消", role: .cancel) {}
         } message: {
-            Text("只清理临时文件与 Caches。证书、已签名 IPA 库、导入的 IPA / dylib、配对文件与日志都会保留。")
+            Text("仅清理临时文件与 Caches。证书、已签名 IPA 库、导入的 IPA 与 dylib、配对文件、日志均会保留。")
         }
     }
 
@@ -93,7 +93,9 @@ struct LibraryView: View {
                 HStack(spacing: 10) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("缓存（临时文件）").font(.subheadline.weight(.semibold))
-                        Text("解包 / 注入 / 签名 / 打包过程中的临时目录。清理**不会**影响已导入的 IPA、dylib、证书、签名产物与日志；**App 启动时也会自动清理上次遗留**（流程被系统杀掉时留下的解包工作树往往有好几个 GB）。")
+                        Text("解包、注入、签名与打包过程使用的临时目录。清理不影响已导入的 IPA、dylib、"
+                             + "证书、签名产物与日志；App 启动时也会自动清理上次遗留的内容"
+                             + "（流程被系统终止时留下的解包工作树可能达数 GB）。")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -132,7 +134,7 @@ struct LibraryView: View {
 
                 Divider()
 
-                Text("日志文件：\(LogStore.shared.fileSizeText) · 首页「日志」卡片上可查看 / 导出 / 清空")
+                Text("日志文件：\(LogStore.shared.fileSizeText) · 可在首页「日志」卡片中查看、导出或清空")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -152,7 +154,7 @@ struct LibraryView: View {
                 }
 
                 if certs.certs.isEmpty {
-                    Text("还没有证书。填好下面的信息，点「保存到证书库」即可。")
+                    Text("尚无证书。填写下方信息后点击「保存到证书库」即可。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

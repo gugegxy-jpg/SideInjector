@@ -47,8 +47,8 @@ struct SettingsView: View {
                         Toggle(isOn: $model.keepScreenAwake) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("执行期间不息屏").font(.subheadline.weight(.semibold))
-                                Text("用系统标准方式在前台保持屏幕常亮。最省事，也不需要额外权限；"
-                                     + "但你自己按电源键锁屏仍会中断。")
+                                Text("以系统标准方式在前台保持屏幕常亮，无需额外权限。"
+                                     + "手动按电源键锁屏仍会中断流程。")
                                     .font(.caption2).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -56,15 +56,15 @@ struct SettingsView: View {
                         Toggle(isOn: $model.keepAliveInBackground) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("执行期间后台保活（切后台）").font(.subheadline.weight(.semibold))
-                                Text("循环播放一段静音音频（`UIBackgroundModes: audio`），切后台时进程仍存活，"
-                                     + "安装能继续跑完。不支持锁屏 —— 锁屏后进程会被系统挂起、流程会断，"
-                                     + "需要长时间无人值守请改用上面的「不息屏」。"
-                                     + "代价是全程持有一个音频会话 —— 更耗电，也会占用音频通道。")
+                                Text("循环播放静音音频（`UIBackgroundModes: audio`），切换到后台时进程仍存活，"
+                                     + "安装可以继续完成。不支持锁屏：锁屏后进程会被系统挂起，流程中断；"
+                                     + "需要长时间无人值守时请改用上方的「不息屏」。"
+                                     + "代价为全程持有一个音频会话，更耗电，并占用音频通道。")
                                     .font(.caption2).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                        Text("两者可同时开。只开一个的话：想省电选「后台保活」，想简单选「不息屏」。")
+                        Text("两者可同时启用。若只启用其一：以省电为先选「后台保活」，以操作简单为先选「不息屏」。")
                             .font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }

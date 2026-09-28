@@ -244,7 +244,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 12) {
                 sectionTitle("开发证书（选择「库」中已保存的证书）", systemImage: "folder.fill.badge.gear")
                 if certs.certs.isEmpty {
-                    Text("还没有保存的证书：请到「库」页签添加并保存。")
+                    Text("尚未保存证书：请在「库」页签添加后保存。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -303,7 +303,7 @@ struct ContentView: View {
                 .onAppear { model.refreshSavedIPAs() }
 
                 if model.savedIPAs.isEmpty {
-                    Text("还没有导入 IPA：点「导入」选择文件（会保存在 App 内，之后可随时切换或删除）。")
+                    Text("尚未导入 IPA：点击「导入」选择文件（文件会保存在 App 内，之后可随时切换或删除）。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

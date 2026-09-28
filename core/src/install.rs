@@ -166,10 +166,13 @@ async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
     // 配对记录可以在设备上自配对生成（本 App「设备配对」），所以这条路不需要电脑。
     // 先用带超时的 TCP 探测筛掉不可达地址，避免对它们做长时间连接等待。
     let mut rp_hosts: Vec<Ipv4Addr> = Vec::new();
+    // 各地址的探测结果留着，最后放进最终错误里 —— 排障时最需要的就是这几行。
+    let mut probe_notes: Vec<String> = Vec::new();
     for host in probe_hosts() {
         let (ok, note) = probe_endpoint(host, RSD_PORT, false).await;
         // 端口探测是逐地址的诊断细节：只进后台日志文件，界面不显示。
         crate::log_detail(&format!("install: 端口探测 {note}"));
+        probe_notes.push(note);
         if ok {
             rp_hosts.push(host);
         }
@@ -288,25 +291,31 @@ async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
     }
 
     if errors.is_empty() {
-        // 把「为什么没有通路」说到位：区分「loopback VPN 没在工作」与「VPN 在工作、但端点不对」。
+        // 「为什么没有通路」必须**照实际探测结果**说，不能写成固定文案。
+        // 踩过的坑：原来这里硬编码了「只有 127.0.0.1 连得上」，而真实情况是一个地址都连不上
+        // （127.0.0.1 / 10.7.0.1 全是 Connection refused），错误信息与日志自相矛盾。
         //
-        // 判据（实测，见 README）：127.0.0.1:49152 是**假阳性** —— loopback VPN 的本地监听会接受
-        // 连接，但一发 RSD 升级请求就被 RST（曾观察到：它「TCP 可连接」，紧接着 `Connection reset
-        // by peer`；真正干活的是 VPN 对端 10.7.0.1）。所以「除 127.0.0.1 之外全不可达」就等于
-        // VPN 没在工作，而不是端口/服务的问题。
-        let vpn_reachable = rp_hosts.iter().any(|h| !h.is_loopback());
-        let reason = if vpn_reachable {
+        // 两种失败形状要分开说（实测）：
+        //   ① rp_hosts 非空 → 至少能建立 TCP：多半是 127.0.0.1 那个**假阳性**
+        //      （VPN 本地监听接受连接，但一发 RSD 升级请求就被 RST），真正干活的是 10.7.0.1；
+        //   ② rp_hosts 为空 → 连回环都没人监听，说明 loopback VPN 整体没生效。
+        let reason = if !rp_hosts.is_empty() {
             "候选地址能建立 TCP，但没有一个是明文 RSD，lockdownd(62078) 也都无应答"
         } else {
-            "loopback VPN（StosVPN / SideStore 的描述文件）看起来**没有在工作**：\
-             端口探测里只有 127.0.0.1:49152 连得上 —— 那是 VPN 本地监听的假阳性\
-             （发 RSD 升级请求必被 RST），而 10.7.0.1 / 10.7.0.2 全部超时"
+            "**49152 上没有任何服务在监听** —— 连本机 127.0.0.1:49152 都被拒绝（Connection refused），\
+             10.7.0.1 同样被拒、10.7.0.2 超时：loopback VPN 整体没有在工作"
         };
         bail!(
             "没有找到可用的安装通路：{reason}。\n\
-             处理：打开 StosVPN（或 SideStore 配套的 loopback VPN 描述文件）并让它保持连接后重试；\n\
-             连上之后，本日志里会出现 `端口探测 10.7.0.1:49152 TCP 可连接`。\n\
-             另：免电脑通路需要配对文件（首页「输入」→ 配对文件）。把 install: 开头的日志发出来可精确定位。"
+             探测明细：\n  - {}\n\
+             处理：\n\
+             ① iOS 同一时间只允许一个 VPN 生效 —— 先断开其它 VPN（Shadowrocket / 公司 VPN 等），\n\
+             　 再连接 LocalDevVPN（StosVPN / SideStore 的描述文件）并保持连接后重试；\n\
+             ② 重试时本日志里应出现 `端口探测 127.0.0.1:49152 TCP 可连接` 或 `10.7.0.1:49152 TCP 可连接`；\n\
+             ③ 标题栏的 `LocalDevVPN` 只表示**隧道接口在**（隧道上有 10.7.x.x 地址），\n\
+             　 并不代表 49152 真的有服务在监听 —— 以这里的端口探测为准。\n\
+             另：免电脑通路需要配对文件（首页「输入」→ 配对文件）。把 install: 开头的日志发出来可精确定位。",
+            probe_notes.join("\n  - ")
         );
     }
     bail!("两条通路都失败：\n - {}", errors.join("\n - "));

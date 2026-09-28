@@ -386,11 +386,11 @@ fn verify_signed_identifiers(app: &Path) {
                 ext_bad += 1;
                 log_msg(&format!(
                     "⚠️ 扩展前缀自检：{id} 不以父 App 的 bundle id（{main_id}）为前缀 —— \
-                     installd 会以 Mismatched bundle IDs 拒绝安装。\n\
-                     　　这是这个包**自带**的错配（第三方改过主 App 的 ID 却没改扩展），\
-                     不改它无论怎么签都装不上。\n\
-                     　　想修：在流程里把「改 Bundle ID」那一步跑一次（**填与当前相同的 ID 也可以**），\
-                     工具会按旧 ID 精确改好扩展（日志 `嵌套扩展 Bundle ID：…：旧 → 新`）。"
+                     installd 将以 Mismatched bundle IDs 拒绝安装。\n\
+                     　　该错配由该包自身携带（主 App 的 ID 曾被修改，但嵌套扩展未同步修改），\
+                     未修正时无论采用何种签名方式均无法安装。\n\
+                     　　修正方式：在流程中执行一次「改 Bundle ID」步骤（填入与当前相同的 ID 亦可），\
+                     工具将按旧 ID 精确修正扩展（日志 `嵌套扩展 Bundle ID：…：旧 → 新`）。"
                 ));
             }
         }

@@ -111,23 +111,24 @@ fn explain_install_error(raw: &str) -> Option<String> {
         .unwrap_or_else(|| "(未知)".into());
         return Some(format!(
             "══ 安装被 iOS 拒绝：跨 App ID 覆盖升级 ══\n\
-             设备上已装的同名 App：{old_id}\n\
-             本次要装的：          {new_id}\n\
-             原因：两者 Bundle ID 相同，但 application-identifier（带证书团队前缀的 App ID）不同。\n\
-             　　 iOS 不允许用另一张证书去「覆盖升级」已装好的同名 App；若设备上装的是\n\
-             　　 App Store 正版（或之前用别家证书装的改版），必然报这一条。\n\
+             设备上已安装的同名 App：{old_id}\n\
+             本次要安装的：          {new_id}\n\
+             原因：两者 Bundle ID 相同，但 application-identifier（含证书团队前缀的 App ID）不同。\n\
+             　　 iOS 不允许使用另一张证书覆盖升级已安装的同名 App；若设备上为 App Store\n\
+             　　 版本，或由其他证书签名的版本，均会被拒绝。\n\
              处理（二选一）：\n\
-             　 ① 先在设备上把那个 App 卸载（长按图标 → 删除），再重新安装；\n\
-             　 ② 改用与它同一张证书 + 描述文件来签名。\n\
-             注意：卸载会清掉该 App 的数据；卸载后仍可安装本工具签出的改版。"
+             　 ① 先在设备上卸载该 App，然后重新安装；\n\
+             　 ② 改用与该 App 相同的证书与描述文件签名。\n\
+             说明：卸载会清除该 App 的数据；卸载后仍可安装本工具签出的版本。"
         ));
     }
     if raw.contains("MismatchedBundleIDSigningIdentifier") {
         return Some(
             "══ 安装被 iOS 拒绝：签名标识与 Bundle ID 不一致 ══\n\
-             某个嵌套代码（framework / appex）的签名标识 ≠ 它的 CFBundleIdentifier。\n\
-             看日志里 `重签（主可执行）：…（CFBundleIdentifier=…）` 一行是否标了 `**缺失**`，\n\
-             以及结尾的 `深签（自实现）：完成 X，失败 Y` 是否为 0 失败。"
+             部分嵌套代码（framework / appex）的签名标识与其 CFBundleIdentifier 不一致。\n\
+             请核对日志中以下两项：\n\
+             　 · `重签（主可执行）：…（CFBundleIdentifier=…）` 一行是否标注 `**缺失**`；\n\
+             　 · 结尾的 `深签（自实现）：完成 X，失败 Y` 中失败数是否为 0。"
                 .to_string(),
         );
     }
@@ -135,8 +136,8 @@ fn explain_install_error(raw: &str) -> Option<String> {
         return Some(
             "══ 安装被 iOS 拒绝：签名校验失败 ══\n\
              常见原因：签名证书与描述文件不匹配（例如描述文件的 App ID 与目标 Bundle ID 不同）、\n\
-             证书已过期/被吊销，或设备不在描述文件的设备列表里。\n\
-             请核对日志里 `描述文件：name=…；App ID=…；团队=…；目标 Bundle ID=…` 一行。"
+             证书已过期或被吊销、设备不在描述文件的设备列表中。\n\
+             请核对日志中 `描述文件：name=…；App ID=…；团队=…；目标 Bundle ID=…` 一行。"
                 .to_string(),
         );
     }
@@ -149,11 +150,11 @@ fn explain_install_error(raw: &str) -> Option<String> {
             "══ 安装被 iOS 拒绝：扩展的 Bundle ID 与父 App 不匹配 ══\n\
              扩展：  {ext_id}\n\
              父 App：{parent_id}\n\
-             原因：iOS 要求**扩展（.appex）的 Bundle ID 必须以父 App 的 Bundle ID 为前缀**。\n\
-             　　 通常是「改了主 App 的 Bundle ID、但没同步改嵌套扩展」造成的。\n\
-             处理：本工具改 Bundle ID 时会自动同步全部扩展（日志里 `嵌套扩展 Bundle ID：PlugIns/…：旧 → 新`）。\n\
-             　　 重新执行一次「改 Bundle ID → 注入 → 签名」流程即可；签名结尾还有\n\
-             　　 `扩展前缀自检：检查 N 个扩展，前缀不符 M 个` 可供核对。"
+             原因：iOS 要求扩展（.appex）的 Bundle ID 必须以父 App 的 Bundle ID 为前缀。\n\
+             　　 通常由「仅修改了主 App 的 Bundle ID、未同步修改嵌套扩展」造成。\n\
+             处理：在流程中执行一次「改 Bundle ID」步骤即可，工具会同步全部扩展\n\
+             　　 （日志中可见 `嵌套扩展 Bundle ID：PlugIns/…：旧 → 新`）。\n\
+             核对：签名结尾的 `扩展前缀自检：检查 N 个扩展，前缀不符 M 个` 中不符数应为 0。"
         ));
     }
     None
@@ -300,23 +301,25 @@ async fn install_async(ipa: &Path, pairing: Option<&Path>) -> Result<()> {
         //      （VPN 本地监听接受连接，但一发 RSD 升级请求就被 RST），真正干活的是 10.7.0.1；
         //   ② rp_hosts 为空 → 连回环都没人监听，说明 loopback VPN 整体没生效。
         let reason = if !rp_hosts.is_empty() {
-            "候选地址能建立 TCP，但没有一个是明文 RSD，lockdownd(62078) 也都无应答"
+            "候选地址可建立 TCP，但均非明文 RSD，lockdownd(62078) 亦无应答"
         } else {
-            "**49152 上没有任何服务在监听** —— 连本机 127.0.0.1:49152 都被拒绝（Connection refused），\
-             10.7.0.1 同样被拒、10.7.0.2 超时：loopback VPN 整体没有在工作"
+            "49152 端口无服务监听：本机 127.0.0.1:49152 拒绝连接（Connection refused），\
+             10.7.0.1 拒绝连接，10.7.0.2 连接超时。判定：loopback VPN 未生效"
         };
         bail!(
-            "没有找到可用的安装通路：{reason}。\n\
+            "未找到可用的安装通路：{reason}。\n\
              探测明细：\n  - {}\n\
-             处理（按代价从低到高，逐条试）：\n\
-             ① 断开并**重新连接** LocalDevVPN —— 「隧道接口在、端口不通」这种卡死态多数靠这一步恢复；\n\
-             ② 断开其它 VPN（Shadowrocket / Clash 等）—— iOS 同一时间只允许一个 VPN 生效，\n\
-             　 它们会截走通往 10.7.0.1 的流量（代理类 VPN 的 utun 地址通常是 198.18.0.1）；\n\
-             ③ 切一次飞行模式（或关/开 WiFi），强制系统重建网络路径；\n\
-             ④ 重启设备 —— 实测能解这种卡死，但代价最大，放最后。\n\
-             重试时本日志里应出现 `端口探测 127.0.0.1:49152 TCP 可连接` 或 `10.7.0.1:49152 TCP 可连接`；\n\
-             另：标题栏的 `LocalDevVPN` 只表示**隧道接口在**，不代表 49152 有服务在监听 —— 以端口探测为准。\n\
-             免电脑通路还需要配对文件（首页「输入」→ 配对文件）。把 install: 开头的日志发出来可精确定位。",
+             处理（建议按顺序尝试）：\n\
+             ① 重新连接 LocalDevVPN。隧道接口存在但端口不可用的情况，多数可由此恢复；\n\
+             ② 断开其它 VPN（Shadowrocket / Clash 等）。iOS 同一时间仅允许一个 VPN 生效；\n\
+             　 代理类 VPN 的 utun 地址通常为 198.18.0.1，会拦截发往 10.7.0.1 的流量；\n\
+             ③ 切换一次飞行模式（或重新开关 WiFi），强制系统重建网络路径；\n\
+             ④ 重启设备。该项可恢复此类故障，但代价最大，建议最后尝试。\n\
+             重试时日志中应出现 `端口探测 127.0.0.1:49152 TCP 可连接` 或 `10.7.0.1:49152 TCP 可连接`。\n\
+             说明：标题栏的 `LocalDevVPN` 仅表示隧道接口存在（隧道上有 10.7.x.x 地址），\n\
+             不代表 49152 端口有服务监听，请以端口探测结果为准。\n\
+             另外：免电脑通路需要配对文件（首页「输入」→ 配对文件）；如需进一步定位，\
+             请提供 install: 开头的完整日志。",
             probe_notes.join("\n  - ")
         );
     }

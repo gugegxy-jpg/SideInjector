@@ -278,21 +278,23 @@ pub async fn install(
                             .and_then(|v| v.as_string())
                             .unwrap_or("?");
                         log_msg(&format!(
-                            "install: ⚠️ 预检 —— 设备上已存在同 Bundle ID 的 App：{target}（版本 {version}；类型 {kind}）"
+                            "install: 预检：设备上已存在相同 Bundle ID 的 App —— {target}（版本 {version}，类型 {kind}）"
                         ));
                         log_msg(
-                            "install: ⚠️ 覆盖升级要求两个包用同一张证书签名；若它是 App Store 正版或用别家证书装的，\
-                             installd 会以 MismatchedApplicationIdentifierEntitlement 拒绝（那时整包已上传完成）。",
+                            "install: 预检：覆盖升级要求两个包使用同一张证书签名。若该 App 为 App Store 版本，\
+                             或由其他证书签名，installd 将以 MismatchedApplicationIdentifierEntitlement 拒绝\
+                             （届时整包已上传完成）。",
                         );
                         log_msg(
-                            "install: ⚠️ 处理（二选一）：① 先在设备上卸载它再安装；② 在流程里改一个不同的 Bundle ID（共存安装）。",
+                            "install: 预检：处理方式（二选一）：① 先在设备上卸载该 App，再安装；\
+                             ② 在流程中改用不同的 Bundle ID，与它共存安装。",
                         );
                     }
                     None => log_msg(&format!(
-                        "install: 预检 —— 设备上没有同 Bundle ID（{target}）的 App，属全新安装"
+                        "install: 预检：设备上不存在相同 Bundle ID（{target}）的 App，属全新安装"
                     )),
                 },
-                Err(e) => log_msg(&format!("install: 预检跳过（查询已装应用失败）：{e:?}")),
+                Err(e) => log_msg(&format!("install: 预检跳过（查询已安装应用失败）：{e:?}")),
             },
             Err(e) => log_msg(&format!(
                 "install: 预检跳过（连接 installation_proxy 失败）：{e:?}"

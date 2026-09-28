@@ -475,8 +475,8 @@ struct ContentView: View {
                 // 实测遇到过「utun 活着、但 49152 没人监听」的僵尸态（重启设备才恢复），
                 // 写成"已连接"会让人以为已经可以装了。真正的判据是下面那行端口探测。
                 envRow("LocalDevVPN", env.vpnUp
-                       ? "隧道接口在 · \(env.vpnDetail)"
-                       : "未发现隧道 · \(env.vpnDetail)")
+                       ? "隧道接口已发现 · \(env.vpnDetail)"
+                       : "未发现隧道接口 · \(env.vpnDetail)")
                 // 逐条端口探测结果不再铺在界面上（3 个候选地址通常 1 个可用、2 个超时，
                 // 一列红叉很扎眼）。这里只给结论 + 处置；逐条明细进后台日志（用日志卡片的「复制」取）。
                 let okPorts = env.portLines.filter { $0.contains("可连接") || $0.contains("收到") }
@@ -484,10 +484,10 @@ struct ContentView: View {
                        ? "未检测"
                        : (okPorts.isEmpty
                           ? (env.vpnUp
-                             // 接口在、端口不通：loopback VPN 卡住（实测重连或重启才恢复）。
-                             ? "49152 不通（VPN 卡住的常见状态）→ 先「断开并重新连接 LocalDevVPN」，"
-                               + "不行再切一次飞行模式，最后才重启设备"
-                             : "49152 无可用出口 → 先打开 LocalDevVPN")
+                             // 隧道接口存在但端口不可用：loopback VPN 未生效（实测重连或重启可恢复）。
+                             ? "49152 不可用（隧道接口存在但无服务监听）。建议依次尝试："
+                               + "重新连接 LocalDevVPN → 切换飞行模式 → 重启设备"
+                             : "49152 无可用出口。请先连接 LocalDevVPN")
                           : "49152 可用（\(okPorts.count) 个地址）"))
             }
         }

@@ -898,7 +898,7 @@ final class Model: ObservableObject {
 
         // —— 安装侧（Rust 的中文诊断）——
         if has("MismatchedApplicationIdentifierEntitlement") || has("跨 App ID 覆盖升级") {
-            return "设备上已存在相同的 App（另一张证书签的），iOS 拒绝覆盖升级"
+            return "设备上已存在相同的 App（由其他证书签名），iOS 拒绝覆盖升级"
         }
         if has("Mismatched bundle IDs") || has("required prefix of") {
             return "扩展的 Bundle ID 与父 App 不匹配"
@@ -907,22 +907,23 @@ final class Model: ObservableObject {
             return "签名标识与 Bundle ID 不一致"
         }
         if has("ApplicationVerificationFailed") || has("InvalidSignature") {
-            return "签名校验失败（证书 / 描述文件与设备不匹配）"
+            return "签名校验失败（证书或描述文件与设备不匹配）"
         }
         if has("IXErrorDomain") || has("APIInternalError") {
-            return "iOS 拒绝了这次安装"
+            return "iOS 拒绝安装"
         }
-        if has("49152 上没有任何服务在监听") || has("没有找到可用的安装通路") {
-            return "LocalDevVPN 没在工作（安装通路不可用）"
+        if has("49152 端口无服务监听") || has("49152 上没有任何服务在监听")
+            || has("未找到可用的安装通路") || has("没有找到可用的安装通路") {
+            return "LocalDevVPN 未连接（安装通路不可用）"
         }
         if has("未提供配对文件") { return "缺少配对文件" }
         if has("尚未配对") { return "尚未完成设备配对" }
 
         // —— 流程侧（各步骤的 reason）——
         if has("解压 IPA 失败") { return "IPA 无法解压（可能损坏或非标准格式）" }
-        if has("注入") && has("失败") { return "dylib 注入失败（多半是这个 IPA 未砸壳）" }
-        if has("未在 Payload 中找到 .app") { return "IPA 里没有 .app 主程序" }
-        if has("证书文件不可用") { return "证书文件不可用（请到「库」重新选择 P12 / 描述文件）" }
+        if has("注入") && has("失败") { return "dylib 注入失败（该 IPA 可能未砸壳）" }
+        if has("未在 Payload 中找到 .app") { return "IPA 中缺少 .app 主程序" }
+        if has("证书文件不可用") { return "证书文件不可用（请在「库」中重新选择 P12 与描述文件）" }
         if has("修改 Bundle 信息失败") { return "修改 Bundle ID / 显示名失败" }
         if has("同步嵌套扩展 Bundle ID 失败") { return "同步嵌套扩展 Bundle ID 失败" }
         if has("打包") && has("失败") { return "打包 IPA 失败" }
@@ -940,12 +941,12 @@ final class Model: ObservableObject {
             || reason.contains("49152")
         var tips: [String] = []
         if aboutPath, !net.vpnUp {
-            tips.append("· LocalDevVPN 现在**没连上**（标题栏是红的）—— 安装必须靠它："
-                        + "打开并保持连接后，点提示条上的「继续」即可，不用重跑。")
+            tips.append("· LocalDevVPN 当前未连接（标题栏显示为红色）。安装依赖该通路，"
+                        + "请连接后点击「继续」，无需重新执行。")
         }
         if aboutPath, !net.wifiUp {
-            tips.append("· 当前 **WiFi 是关着的**：loopback VPN 需要一个可用的网络接口，"
-                        + "建议先打开 WiFi 再试。")
+            tips.append("· 当前 WiFi 未连接。loopback VPN 需要可用的网络接口，"
+                        + "建议连接 WiFi 后重试。")
         }
         guard !tips.isEmpty else { return nil }
         return "补充：\n" + tips.joined(separator: "\n")

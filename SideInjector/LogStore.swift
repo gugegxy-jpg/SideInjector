@@ -175,6 +175,26 @@ final class LogStore: ObservableObject {
             try? data.write(to: url, options: .atomic)
         }
     }
+
+    // MARK: - 复制
+
+    /// 复制**完整日志**（含细节日志，也就是排查时真正有用的那些行）到剪贴板。
+    ///
+    /// 为什么读文件而不是用内存里的 `text`：后者只有重要日志，而细节行（逐项重签、端口探测、
+    /// 上游库输出、RSD 服务清单…）只在文件里；发人排查时少一行都可能缺线索。
+    /// 文件读不到时退回内存快照。
+    ///
+    /// `onDone` 回传被复制的内容（`nil` 表示日志为空）。失败弹窗的「复制日志」按钮与
+    /// 日志卡片共用这一条实现，避免两处逻辑漂移。
+    func copyAllToPasteboard(onDone: @escaping (String?) -> Void = { _ in }) {
+        loadAll { [weak self] content in
+            guard let self else { return }
+            let s = content.isEmpty ? self.text : content
+            guard !s.isEmpty else { onDone(nil); return }
+            UIPasteboard.general.string = s
+            onDone(s)
+        }
+    }
 }
 
 /// 日志卡片。
@@ -268,24 +288,10 @@ struct LogCard: View {
         }
     }
 
-    /// 复制**完整日志**（含细节日志，也就是排查时真正有用的那些行）到剪贴板。
+    /// 复制**完整日志**到剪贴板。
     ///
-    /// 为什么读文件而不是用内存里的 `text`：后者只有重要日志，而细节行（逐项重签、端口探测、
-    /// 上游库输出、RSD 服务清单…）只在文件里；发人排查时少一行都可能缺线索。
-    /// 文件读不到时退回内存快照。
-    ///
-    /// 返回值交给调用方（`nil` = 日志为空），失败弹窗里的「复制日志」也走这条实现。
-    func copyAllToPasteboard(onDone: @escaping (String?) -> Void = { _ in }) {
-        loadAll { [weak self] content in
-            guard let self else { return }
-            let s = content.isEmpty ? self.text : content
-            guard !s.isEmpty else { onDone(nil); return }
-            UIPasteboard.general.string = s
-            onDone(s)
-        }
-    }
-
-    /// 见 `copyAllToPasteboard`：这里只管界面上的「已复制」反馈。
+    /// 复制逻辑在 `LogStore.copyAllToPasteboard`（失败弹窗的「复制日志」按钮走同一条路径），
+    /// 这里只负责界面上的「已复制」反馈。
     private func copyAll() {
         log.copyAllToPasteboard { s in
             guard let s else {

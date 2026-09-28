@@ -455,16 +455,23 @@ struct ContentView: View {
                 envRow("配对能力", env.selfPairCapable
                        ? "iOS 27+ · 支持设备端自配对（无需配对文件）"
                        : "iOS 18–26 · 需要 PC 生成的配对文件")
+                // 措辞刻意用「隧道接口在」而不是「已连接」：接口在 ≠ 通路可用 ——
+                // 实测遇到过「utun 活着、但 49152 没人监听」的僵尸态（重启设备才恢复），
+                // 写成"已连接"会让人以为已经可以装了。真正的判据是下面那行端口探测。
                 envRow("LocalDevVPN", env.vpnUp
-                       ? "已连接 · \(env.vpnDetail)"
-                       : "未连接 · \(env.vpnDetail)")
+                       ? "隧道接口在 · \(env.vpnDetail)"
+                       : "未发现隧道 · \(env.vpnDetail)")
                 // 逐条端口探测结果不再铺在界面上（3 个候选地址通常 1 个可用、2 个超时，
-                // 一列红叉很扎眼）。这里只给一句结论；逐条明细写进后台日志（用日志卡片的「复制」取）。
+                // 一列红叉很扎眼）。这里只给结论 + 处置；逐条明细进后台日志（用日志卡片的「复制」取）。
                 let okPorts = env.portLines.filter { $0.contains("可连接") || $0.contains("收到") }
                 envRow("隧道端口", env.portLines.isEmpty
                        ? "未检测"
                        : (okPorts.isEmpty
-                          ? "49152 无可用出口 · 请确认 LocalDevVPN 已连接"
+                          ? (env.vpnUp
+                             // 接口在、端口不通：loopback VPN 卡住（实测重连或重启才恢复）。
+                             ? "49152 不通（VPN 卡住的常见状态）→ 先「断开并重新连接 LocalDevVPN」，"
+                               + "不行再切一次飞行模式，最后才重启设备"
+                             : "49152 无可用出口 → 先打开 LocalDevVPN")
                           : "49152 可用（\(okPorts.count) 个地址）"))
             }
         }

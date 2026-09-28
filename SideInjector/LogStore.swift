@@ -273,16 +273,27 @@ struct LogCard: View {
     /// 为什么读文件而不是用内存里的 `text`：后者只有重要日志，而细节行（逐项重签、端口探测、
     /// 上游库输出、RSD 服务清单…）只在文件里；发人排查时少一行都可能缺线索。
     /// 文件读不到时退回内存快照。
+    ///
+    /// 返回值交给调用方（`nil` = 日志为空），失败弹窗里的「复制日志」也走这条实现。
+    func copyAllToPasteboard(onDone: @escaping (String?) -> Void = { _ in }) {
+        loadAll { [weak self] content in
+            guard let self else { return }
+            let s = content.isEmpty ? self.text : content
+            guard !s.isEmpty else { onDone(nil); return }
+            UIPasteboard.general.string = s
+            onDone(s)
+        }
+    }
+
+    /// 见 `copyAllToPasteboard`：这里只管界面上的「已复制」反馈。
     private func copyAll() {
-        log.loadAll { content in
-            let s = content.isEmpty ? log.text : content
-            guard !s.isEmpty else {
+        log.copyAllToPasteboard { s in
+            guard let s else {
                 copied = false
                 copiedNote = "日志为空，没有可复制的内容"
                 scheduleNoteReset()
                 return
             }
-            UIPasteboard.general.string = s
             let lines = s.split(separator: "\n", omittingEmptySubsequences: false).count
             let size = ByteCountFormatter.string(fromByteCount: Int64(s.utf8.count), countStyle: .file)
             copied = true

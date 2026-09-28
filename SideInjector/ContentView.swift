@@ -63,6 +63,22 @@ struct ContentView: View {
         } message: {
             Text(model.inputError ?? "")
         }
+        // 执行过程中的失败同样弹窗：原来只落在进度卡片的提示条与日志里，用户很容易没注意到。
+        // 正文是精简版（安装失败的完整说明有十几行，塞进弹窗读不动），完整内容在「日志」卡片。
+        .alert(model.failure?.title ?? "", isPresented: failureShown, presenting: model.failure) { _ in
+            Button("复制日志") {
+                LogStore.shared.copyAllToPasteboard()
+                model.failure = nil
+            }
+            Button("好", role: .cancel) { model.failure = nil }
+        } message: { f in
+            Text(f.alertText)
+        }
+    }
+
+    private var failureShown: Binding<Bool> {
+        Binding(get: { model.failure != nil },
+                set: { if !$0 { model.failure = nil } })
     }
 
     private var inputErrorShown: Binding<Bool> {

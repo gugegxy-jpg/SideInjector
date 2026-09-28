@@ -215,6 +215,9 @@ final class Model: ObservableObject {
     @Published var shareItem: URL? = nil
     /// 启动前校验/准备失败的原因（非 nil 时界面弹窗提示）。
     @Published var inputError: String? = nil
+    /// 执行过程中「流程未完成」的提示（非 nil 时界面弹窗）。所有失败都经 `pause(at:reason:)`
+    /// 汇聚到这里 —— 失败原来只落在进度卡片的提示条与日志里，用户常常没注意到。
+    @Published var failure: RunFailure? = nil
 
     /// 全流程阶段。配对只需一次：已配对会自动跳过该阶段。
     let stages = ["解压 IPA", "注入 dylib", "修改 Bundle 信息", "重签", "打包 IPA", "设备配对", "安装到设备"]
@@ -869,6 +872,40 @@ final class Model: ObservableObject {
             self.outcome = .paused
             self.pauseReason = reason
             self.status = reason
+            // 弹窗 + 日志各记一份：失败只躺在提示条里的话，用户常常没注意到。
+            let place = self.failurePlace(step)
+            self.failure = RunFailure(title: "\(place)未完成", message: reason)
+            LogStore.shared.append("流程未完成（\(place)）：\(reason)")
+        }
+    }
+
+    /// 「失败发生在哪一步」的人类可读说法（例：`第 7 步「安装到设备」`）。
+    private func failurePlace(_ step: Int) -> String {
+        guard mode == .full, stages.indices.contains(step) else { return "安装" }
+        return "第 \(step + 1) 步「\(stages[step])」"
+    }
+
+    /// 一次「流程未完成」的提示（给弹窗用）。
+    ///
+    /// 为什么要有这个类型：失败原来只体现在进度卡片的提示条与日志上，用户很容易没注意到；
+    /// 所有执行期失败都汇聚到 `pause(at:reason:)`，由它记一条，界面统一弹窗。
+    struct RunFailure: Identifiable, Equatable {
+        let id = UUID()
+        /// 例：`第 7 步「安装到设备」未完成`
+        let title: String
+        /// 中文原因（可能多行）。
+        let message: String
+
+        /// 弹窗正文用的精简版：安装失败的说明有十几行，弹窗里塞不下 —— 只截前若干行，
+        /// 其余指到日志卡片（那里有完整内容与「复制」）。
+        var alertText: String {
+            let lines = message.split(separator: "\n", omittingEmptySubsequences: false)
+            let keep = 7
+            var out = lines.prefix(keep).joined(separator: "\n")
+            if lines.count > keep {
+                out += "\n…（完整说明见「日志」卡片，可点其中的「复制」）"
+            }
+            return out
         }
     }
     private func finishSuccess(_ message: String = "已完成：安装成功") {

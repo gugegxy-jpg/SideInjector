@@ -166,26 +166,10 @@ pub(crate) async fn prepare_install(
 
 /// 必须收到 Complete 才视为卸载成功；只有 Error 而无描述的响应也必须失败。
 async fn uninstall_app(client: &mut InstallationProxyClient, target: &str) -> Result<()> {
-    let mut command = plist::Dictionary::new();
-    command.insert("Command".into(), "Uninstall".into());
-    command.insert("ApplicationIdentifier".into(), target.into());
-    command.insert("ClientOptions".into(), plist::Value::Dictionary(plist::Dictionary::new()));
-    client.idevice.send_plist(command).await.context("发送卸载请求失败")?;
-    loop {
-        let response = client.idevice.read_plist().await.context("读取卸载结果失败")?;
-        if uninstall_complete(&response)? {
-            return Ok(());
-        }
-    }
-}
+    // 公开接口内部检查 Error / ErrorDescription，并等待 Status == Complete。
+    // 底层 plist 收发属于库的私有方法，不能在 crate 外调用。
+    client.uninstall(target, None).await.context("卸载应用失败")
 
-fn uninstall_complete(response: &plist::Dictionary) -> Result<bool> {
-    if response.contains_key("Error") || response.contains_key("ErrorDescription") {
-        bail!("卸载失败：{:?}；{:?}", response.get("Error"), response.get("ErrorDescription"));
-    }
-    let status = response.get("Status").and_then(plist::Value::as_string)
-        .context("卸载响应缺少 Status，未确认卸载成功")?;
-    Ok(status == "Complete")
 }
 
 #[cfg(test)]
@@ -197,12 +181,6 @@ mod tests {
             target: target.into(), own_bundle_id: own.into(),
             policy: InstallPolicy::Ask, uninstall_started: false, uninstalled: false,
         }
-    }
-
-    fn response(key: &str, value: &str) -> plist::Dictionary {
-        let mut dict = plist::Dictionary::new();
-        dict.insert(key.into(), plist::Value::String(value.into()));
-        dict
     }
 
     #[test]
@@ -224,22 +202,6 @@ mod tests {
     fn protects_system_apps_and_unknown_installer_identity() {
         assert!(!request("com.apple.target", "custom.installer").can_reinstall("System"));
         assert!(!request("custom.target", "").can_reinstall("User"));
-    }
-
-    #[test]
-    fn uninstall_requires_explicit_completion() {
-        assert!(uninstall_complete(&response("Status", "Complete")).unwrap());
-        assert!(!uninstall_complete(&response("Status", "Uninstalling")).unwrap());
-        assert!(uninstall_complete(&plist::Dictionary::new()).is_err());
-        assert!(uninstall_complete(&response("PercentComplete", "100")).is_err());
-    }
-
-    #[test]
-    fn uninstall_errors_override_completion() {
-        let mut dict = response("Status", "Complete");
-        dict.insert("Error".into(), "ApplicationUninstallFailed".into());
-        assert!(uninstall_complete(&dict).is_err());
-        assert!(uninstall_complete(&response("ErrorDescription", "拒绝卸载")).is_err());
     }
 
     #[test]

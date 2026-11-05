@@ -218,6 +218,10 @@ final class Model: ObservableObject {
     /// 执行过程中「流程未完成」的提示（非 nil 时界面弹窗）。所有失败都经 `pause(at:reason:)`
     /// 汇聚到这里 —— 失败原来只落在进度卡片的提示条与日志里，用户常常没注意到。
     @Published var failure: RunFailure? = nil
+    @Published private(set) var installConflict: InstallConflict?
+    private var nextInstallPolicy: InstallPolicy = .ask
+    private var expectedInstallBundleId = ""
+    private var installationInFlight = false
 
     /// 全流程阶段。配对只需一次：已配对会自动跳过该阶段。
     let stages = ["解压 IPA", "注入 dylib", "修改 Bundle 信息", "重签", "打包 IPA", "设备配对", "安装到设备"]
@@ -302,6 +306,8 @@ final class Model: ObservableObject {
 
     func run() {
         guard !busy else { return }
+        resetInstallChoice()
+        failure = nil
 
         // 1) 校验（失败立刻弹窗；此时不动日志，方便看到上次现场）
         guard let ipa else { return failInput("请先选择 IPA 文件") }
@@ -469,6 +475,9 @@ final class Model: ObservableObject {
     /// 「库」里点击一条已签名 IPA → 直接安装（只跑安装阶段）。
     func installSaved(_ item: SignedIPA) {
         guard !busy else { return }
+        resetInstallChoice()
+        failure = nil
+        inputError = nil
         LogStore.shared.clear()
         mode = .installOnly
         installOnlyURL = IPALibrary.shared.url(for: item)
@@ -485,7 +494,8 @@ final class Model: ObservableObject {
 
     /// 用户修好环境（连 Wi-Fi / 开 VPN / 完成配对）后从这里继续。
     func resume() {
-        guard outcome == .paused else { return }
+        guard outcome == .paused, installConflict == nil else { return }
+        failure = nil
         pauseReason = nil
         outcome = .running
         status = "继续处理…"
@@ -501,6 +511,13 @@ final class Model: ObservableObject {
     /// 取消当前流程：停止任务、清理临时文件、复位到空闲（保留已选输入）。
     func cancel() {
         guard busy else { return }
+        if installationInFlight {
+            flowTask?.cancel()
+            status = "正在取消，等待当前设备操作结束（已提交的安装无法撤回）…"
+            return
+        }
+        resetInstallChoice()
+        failure = nil
         // 先置为 idle：流程里所有状态回调都会因 outcome == .idle 而被忽略，
         // 避免已取消的步骤随后又把状态改回「处理中/已暂停」。
         outcome = .idle
@@ -776,11 +793,11 @@ final class Model: ObservableObject {
                         break
                     }
                     self.markRunning(self.installStage, "安装到设备…")
-                    let result = await InstallEngine.shared.install(
-                        ipaPath: ctx.outIpa.path,
-                        pairingURL: ctx.pairingCopy
-                    ) { frac, msg in
-                        self.installProgress(frac, msg)
+                    let result = await self.performInstall(url: ctx.outIpa, pairingURL: ctx.pairingCopy)
+                    if Task.isCancelled { return }
+                    if let conflict = result.conflict {
+                        await self.waitForInstallChoice(conflict, step: self.installStage)
+                        return
                     }
                     if result.ok {
                         self.markDone(self.installStage)
@@ -819,8 +836,11 @@ final class Model: ObservableObject {
                 return
             }
             self.markRunning(0, "安装到设备…")
-            let result = await InstallEngine.shared.install(ipaPath: url.path, pairingURL: nil) { frac, msg in
-                self.installProgress(frac, msg)
+            let result = await self.performInstall(url: url, pairingURL: nil)
+            if Task.isCancelled { return }
+            if let conflict = result.conflict {
+                await self.waitForInstallChoice(conflict, step: 0)
+                return
             }
             if result.ok {
                 self.finishSuccess()
@@ -828,6 +848,56 @@ final class Model: ObservableObject {
                 self.pause(at: 0, reason: result.message)
             }
         }
+    }
+
+    // MARK: - 同 Bundle ID 的安装选择
+
+    private func resetInstallChoice() {
+        installConflict = nil
+        nextInstallPolicy = .ask
+        expectedInstallBundleId = ""
+    }
+
+    /// 两个安装入口共用；选择只消费一次，失败后重试需要重新检测和确认。
+    @MainActor
+    private func performInstall(url: URL, pairingURL: URL?) async -> InstallResult {
+        guard !Task.isCancelled else { return .init(ok: false, message: "已取消安装") }
+        let policy = nextInstallPolicy
+        let expected = expectedInstallBundleId
+        resetInstallChoice()
+        installationInFlight = true
+        let result = await InstallEngine.shared.install(
+            ipaPath: url.path, pairingURL: pairingURL ?? pairingFile,
+            policy: policy, expectedBundleId: expected
+        ) { frac, msg in
+            self.installProgress(frac, msg)
+        }
+        installationInFlight = false
+        // 在同一主线程回合收尾，旧任务不能延迟取消用户随后启动的新流程。
+        if Task.isCancelled { cancel() }
+        return result
+    }
+
+    @MainActor
+    private func waitForInstallChoice(_ conflict: InstallConflict, step: Int) {
+        guard outcome != .idle, !Task.isCancelled else { return }
+        resumeStep = step
+        stageIndex = step
+        progress = Double(step) / Double(stepCount)
+        pauseReason = "设备上已存在 \(conflict.bundleId)，请选择覆盖安装或卸载重装。"
+        status = "等待选择安装方式"
+        failure = nil
+        outcome = .paused
+        installConflict = conflict
+    }
+
+    func chooseInstallPolicy(_ policy: InstallPolicy, for conflict: InstallConflict) {
+        guard outcome == .paused, installConflict?.id == conflict.id,
+              policy != .ask, policy != .reinstall || conflict.canReinstall else { return }
+        nextInstallPolicy = policy
+        expectedInstallBundleId = conflict.bundleId
+        installConflict = nil
+        resume()
     }
 
     // MARK: - 状态更新（统一切回主线程；outcome == .idle 表示已取消，全部忽略）

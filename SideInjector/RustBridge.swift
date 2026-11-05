@@ -29,6 +29,13 @@ func si_sync_extension_ids(_ app: UnsafePointer<CChar>) -> Int32
 @_silgen_name("si_install_ipa")
 func si_install_ipa(_ ipa: UnsafePointer<CChar>, _ pairing: UnsafePointer<CChar>?) -> Int32
 
+@_silgen_name("si_install_ipa_with_policy")
+func si_install_ipa_with_policy(_ ipa: UnsafePointer<CChar>, _ pairing: UnsafePointer<CChar>?, _ policy: Int32,
+                                _ ownBundleId: UnsafePointer<CChar>, _ expectedBundleId: UnsafePointer<CChar>) -> Int32
+
+@_silgen_name("si_install_result")
+func si_install_result() -> UnsafeMutablePointer<CChar>?
+
 @_silgen_name("si_install_progress")
 func si_install_progress() -> Int32
 
@@ -137,13 +144,26 @@ final class RustBridge {
     }
 
     /// 安装到设备。`pairing` 为配对文件路径（经典通路需要；RSD 通路可传 nil）。
-    func install(ipa: String, pairing: String?) -> Int32 {
+    func install(ipa: String, pairing: String?, policy: InstallPolicy,
+                 ownBundleId: String, expectedBundleId: String) -> Int32 {
         ipa.withCString { i in
-            if let pairing {
-                return pairing.withCString { p in si_install_ipa(i, p) }
+            ownBundleId.withCString { own in
+                expectedBundleId.withCString { expected in
+                    if let pairing {
+                        return pairing.withCString { p in
+                            si_install_ipa_with_policy(i, p, policy.rawValue, own, expected)
+                        }
+                    }
+                    return si_install_ipa_with_policy(i, nil, policy.rawValue, own, expected)
+                }
             }
-            return si_install_ipa(i, nil)
         }
+    }
+
+    func installResultJSON() -> String? {
+        guard let p = si_install_result() else { return nil }
+        defer { si_string_free(p) }
+        return String(cString: p)
     }
 
     /// 安装进度（-1=未开始/失败，0…100）。设备端安装由 Rust 走 RSD 链路，进度靠轮询。

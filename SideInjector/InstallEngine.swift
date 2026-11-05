@@ -8,6 +8,30 @@ import UIKit
 struct InstallResult {
     let ok: Bool
     let message: String
+    var conflict: InstallConflict? = nil
+}
+
+enum InstallPolicy: Int32 {
+    case ask = 0, overwrite = 1, reinstall = 2
+}
+
+/// 设备查询结果，标识来自最终 IPA，而非输入框或库文件名。
+struct InstallConflict: Decodable, Identifiable {
+    var id: String { bundleId }
+    let bundleId: String
+    let displayName: String
+    let version: String
+    let canReinstall: Bool
+    let restriction: String
+
+    var message: String {
+        let name = displayName.isEmpty ? bundleId : displayName
+        let versionText = version.isEmpty ? "" : "（版本 \(version)）"
+        let details = "设备上已安装 \(name)\(versionText)\nBundle ID：\(bundleId)\n\n"
+            + "覆盖安装：不主动清除原有数据；签名身份不兼容时，iOS 可能拒绝覆盖。"
+        if !canReinstall { return details + "\n\n" + restriction }
+        return details + "\n\n卸载重装：先删除原 App，再安装新版本。原有应用数据将被清除且无法恢复；若重新安装失败，原 App 不会自动恢复。"
+    }
 }
 
 /// 本地回环隧道健康状态（绿/红）
@@ -200,9 +224,13 @@ final class InstallEngine {
     ///   1. 在后台线程调用阻塞的 `si_install_ipa`；
     ///   2. 轮询 `si_install_progress` 把真实进度喂给 UI。
     /// 只有 installd 真正返回成功（FFI 返回 0）才算完成——绝不以进度值判定成功。
+    @MainActor
     func install(ipaPath: String,
                  pairingURL: URL?,
+                 policy: InstallPolicy = .ask,
+                 expectedBundleId: String = "",
                  onProgress: @escaping (Double, String) -> Void) async -> InstallResult {
+        guard !Task.isCancelled else { return .init(ok: false, message: "已取消安装") }
         LogStore.shared.append("install: 走 CoreDevice/RSD 链路（127.0.0.1:49152）")
         // 网络环境（排障时最先要对照的两项）：安装链路**不访问外网** —— 全程是本机内的
         // loopback VPN 隧道 → RSD → AFC/installation_proxy → installd；WiFi 本身不提供通路。
@@ -213,16 +241,24 @@ final class InstallEngine {
         LogStore.shared.append("install: 网络环境：WiFi \(wifiOn ? "已连接" : "未连接")"
                                + " · LocalDevVPN \(vpnOn ? "已连接" : "未连接")")
 
-        final class InstallState { var done = false; var rc: Int32 = -1 }
+        final class InstallState {
+            var done = false
+            var rc: Int32 = -1
+            var resultJSON: String?
+        }
         let state = InstallState()
+        let ownBundleId = Bundle.main.bundleIdentifier ?? ""
         // 配对文件：经典通路（lockdownd + 配对记录）必须用它建立会话；
         // 优先用流程里选中的，其次用设备自配对（iOS 27）产出的那份。
         let pairingPath = pairingURL?.path ?? PairingController.shared.pairingFilePath
         LogStore.shared.append("install: 配对文件 \(pairingPath ?? "未提供（经典通路会失败）")")
         DispatchQueue.global(qos: .userInitiated).async {
-            let rc = RustBridge.shared.install(ipa: ipaPath, pairing: pairingPath)
+            let rc = RustBridge.shared.install(ipa: ipaPath, pairing: pairingPath, policy: policy,
+                                               ownBundleId: ownBundleId, expectedBundleId: expectedBundleId)
+            let resultJSON = RustBridge.shared.installResultJSON()
             DispatchQueue.main.async {
                 state.rc = rc
+                state.resultJSON = resultJSON
                 state.done = true
             }
         }
@@ -231,24 +267,39 @@ final class InstallEngine {
         // 用 `-2` 字面量会让编译器推断成 Int，后面 `lastPercent = p` 就编译不过。
         var lastPercent: Int32 = -2
         while !state.done {
-            if Task.isCancelled { break }
             let p = RustBridge.shared.installProgress()
             if p != lastPercent {
                 lastPercent = p
-                if p >= 0 {
-                    let frac = min(max(Double(p) / 100.0, 0), 1)
-                    let text = p >= 100 ? "安装完成" : "安装中：\(p)%"
-                    DispatchQueue.main.async { onProgress(frac, text) }
+                if !Task.isCancelled {
+                    if p == -2 {
+                        onProgress(0, "正在卸载原 App…")
+                    } else if p >= 0 {
+                        let frac = min(max(Double(p) / 100.0, 0), 1)
+                        let text = p >= 100 ? "等待安装结果…" : "安装中：\(p)%"
+                        onProgress(frac, text)
+                    }
                 }
             }
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            // 阻塞 FFI 不可强行终止：取消后也等它退出，避免清理正被使用的文件或并发安装。
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { continuation.resume() }
+            }
         }
 
         if state.rc == 0 {
             return .init(ok: true, message: "安装成功")
         }
-        return .init(ok: false,
-                     message: "设备端安装失败：详见日志里的 `install error: …`（下一步据此定位）")
+        if let data = state.resultJSON?.data(using: .utf8) {
+            if state.rc == 1,
+               let conflict = try? JSONDecoder().decode(InstallConflict.self, from: data) {
+                return .init(ok: false, message: "请选择安装方式", conflict: conflict)
+            }
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let error = obj["error"] as? String {
+                return .init(ok: false, message: error)
+            }
+        }
+        return .init(ok: false, message: "设备端安装失败：请查看日志里的 install error 详情")
     }
 
     // MARK: - 环境检测

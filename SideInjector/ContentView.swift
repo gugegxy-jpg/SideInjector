@@ -11,6 +11,7 @@ struct ContentView: View {
     @EnvironmentObject var model: Model
     @Environment(\.horizontalSizeClass) private var hSize
     @State private var presentingShare = false
+    @State private var presentingInstallChoice = false
     @State private var tab = 0
     @ObservedObject private var pairing = PairingController.shared
     @ObservedObject private var certs = CertStore.shared
@@ -73,6 +74,21 @@ struct ContentView: View {
             Button("好", role: .cancel) { model.failure = nil }
         } message: { f in
             Text(f.alertText)
+        }
+        .onChange(of: model.installConflict?.id) { _, id in
+            presentingInstallChoice = id != nil
+        }
+        .alert("已存在相同 Bundle ID 的 App", isPresented: $presentingInstallChoice,
+               presenting: model.installConflict) { conflict in
+            Button("覆盖安装") { model.chooseInstallPolicy(.overwrite, for: conflict) }
+            if conflict.canReinstall {
+                Button("卸载重装（清除数据）", role: .destructive) {
+                    model.chooseInstallPolicy(.reinstall, for: conflict)
+                }
+            }
+            Button("取消", role: .cancel) { model.cancel() }
+        } message: { conflict in
+            Text(conflict.message)
         }
     }
 
@@ -558,9 +574,10 @@ struct ContentView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                             HStack(spacing: 10) {
                                 Button {
-                                    model.resume()
+                                    if model.installConflict != nil { presentingInstallChoice = true }
+                                    else { model.resume() }
                                 } label: {
-                                    Label("继续", systemImage: "play.fill")
+                                    Label(model.installConflict == nil ? "继续" : "选择安装方式", systemImage: "play.fill")
                                 }
                                 .buttonStyle(.borderedProminent)
                                 Button(role: .destructive) {
@@ -646,7 +663,9 @@ struct ContentView: View {
 
     private var actionButton: some View {
         Button {
-            if model.outcome == .paused {
+            if model.installConflict != nil {
+                presentingInstallChoice = true
+            } else if model.outcome == .paused {
                 model.resume()
             } else {
                 model.run()
@@ -658,7 +677,7 @@ struct ContentView: View {
                     Text(model.status).lineLimit(1)   // 按钮内实时显示当前阶段（同 SideInstaller）
                 } else if model.outcome == .paused {
                     Image(systemName: "play.fill")
-                    Text("继续")
+                    Text(model.installConflict == nil ? "继续" : "选择安装方式")
                 } else {
                     Image(systemName: "syringe.fill")
                         .contentTransition(.symbolEffect(.replace))

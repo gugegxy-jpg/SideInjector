@@ -249,13 +249,42 @@ pub extern "C" fn si_install_ipa(ipa: *const c_char, pairing: *const c_char) -> 
     logbridge::init();
     // 配对文件可选：经典通路（lockdownd + 配对记录）需要它，RSD 通路不需要。
     let pairing = to_str(pairing);
-    match install::install_ipa(
+    install::install_ipa(
         std::path::Path::new(&ipa),
         pairing.as_deref().map(std::path::Path::new),
-    ) {
-        Ok(_) => 0,
-        Err(_) => -1, // 详细错误已由 install 模块按错误链写入日志
-    }
+        install::InstallPolicy::Ask, "", "",
+    )
+}
+
+/// 0=成功，1=同 Bundle ID 待选择，-1=失败。策略：0=询问，1=覆盖，2=卸载重装。
+#[no_mangle]
+pub extern "C" fn si_install_ipa_with_policy(
+    ipa: *const c_char,
+    pairing: *const c_char,
+    policy: c_int,
+    own_bundle_id: *const c_char,
+    expected_bundle_id: *const c_char,
+) -> c_int {
+    let Some(ipa) = to_str(ipa) else { return -1; };
+    let Ok(policy) = install::InstallPolicy::from_raw(policy) else { return -1; };
+    let pairing = to_str(pairing);
+    logbridge::init();
+    install::install_ipa(
+        std::path::Path::new(&ipa),
+        pairing.as_deref().map(std::path::Path::new),
+        policy,
+        &to_str(own_bundle_id).unwrap_or_default(),
+        &to_str(expected_bundle_id).unwrap_or_default(),
+    )
+}
+
+/// 本次安装的冲突信息或错误 JSON；调用方通过 si_string_free 释放。
+#[no_mangle]
+pub extern "C" fn si_install_result() -> *mut c_char {
+    install::result_json()
+        .and_then(|s| CString::new(s).ok())
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// 安装进度：-1=未开始/失败，0..100=进行中，100=完成。Swift 侧轮询它更新 UI。
